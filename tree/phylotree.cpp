@@ -5163,6 +5163,10 @@ void PhyloTree::computeNNIPatternLh(double cur_lh, double &lh2, double *pattern_
 }
 
 /** RELL log-likelihoods of the three NNI topologies for one replicate's pattern frequencies */
+#ifdef IQTREE_ALRT_CACHE_CHECK
+static long alrt_cache_checked = 0;
+#endif
+
 static inline void sumRellLh(double **pat_lh, double *lh_new, const int *boot_freq, int nptn) {
     memset(lh_new, 0, sizeof(double) * 3);
     for (int i = 0; i < nptn; i++) {
@@ -5414,8 +5418,14 @@ double PhyloTree::testOneBranch(double best_score, double *pattern_lh, int reps,
         // a different team size means a different replicate-to-stream assignment
         bool replay = cacheable && alrt_boot_freq_threads == omp_get_num_threads();
         int *rstream = nullptr;
+#ifdef IQTREE_ALRT_CACHE_CHECK
+        // debug build: also draw every replicate as before and compare it with the replay
+        IntVector check_freq(nptn);
+        init_random(params->ran_seed + omp_get_thread_num(), false, &rstream);
+#else
         if (!replay)
             init_random(params->ran_seed + omp_get_thread_num(), false, &rstream);
+#endif
         if (omp_get_thread_num() == 0)
             team_size = omp_get_num_threads();
 #pragma omp for reduction(+: lbp_support_int, SH_aLRT_support)
@@ -5428,6 +5438,17 @@ double PhyloTree::testOneBranch(double best_score, double *pattern_lh, int reps,
             int *boot_freq = alrt_boot_freq.data() + (size_t)i * nptn;
             if (!replay)
                 aln->createBootstrapAlignment(boot_freq, params->bootstrap_spec, rstream);
+#ifdef IQTREE_ALRT_CACHE_CHECK
+            else {
+                aln->createBootstrapAlignment(check_freq.data(), params->bootstrap_spec, rstream);
+                if (memcmp(check_freq.data(), boot_freq, sizeof(int) * nptn) != 0) {
+                    cerr << "ALRT_CACHE_CHECK: replicate " << i << " differs" << endl;
+                    abort();
+                }
+#pragma omp atomic
+                alrt_cache_checked++;
+            }
+#endif
             sumRellLh(pat_lh, lh_new, boot_freq, nptn);
         } else
             resampleLh(pat_lh, lh_new, rstream);
@@ -5537,6 +5558,9 @@ int PhyloTree::testAllBranches(int threshold, double best_score, double *pattern
     if (top_level) {
         alrt_boot_freq_threads = 0;
         IntVector().swap(alrt_boot_freq);
+#ifdef IQTREE_ALRT_CACHE_CHECK
+        cout << "ALRT_CACHE_CHECK: " << alrt_cache_checked << " replayed replicates matched" << endl;
+#endif
     }
     return num_low_support;
 }
