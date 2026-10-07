@@ -5162,19 +5162,23 @@ void PhyloTree::computeNNIPatternLh(double cur_lh, double &lh2, double *pattern_
         cout << "Alternative NNI shows better log-likelihood " << max(lh2,lh3) << " > " << cur_lh << endl;
 }
 
-void PhyloTree::resampleLh(double **pat_lh, double *lh_new, int *rstream) {
-    //int nsite = getAlnNSite();
-    int nptn = getAlnNPattern();
+/** RELL log-likelihoods of the three NNI topologies for one replicate's pattern frequencies */
+static inline void sumRellLh(double **pat_lh, double *lh_new, const int *boot_freq, int nptn) {
     memset(lh_new, 0, sizeof(double) * 3);
-    int i;
-    int *boot_freq = aligned_alloc<int>(getAlnNPattern());
-    aln->createBootstrapAlignment(boot_freq, params->bootstrap_spec, rstream);
-    for (i = 0; i < nptn; i++) {
+    for (int i = 0; i < nptn; i++) {
 
         lh_new[0] += boot_freq[i] * pat_lh[0][i];
         lh_new[1] += boot_freq[i] * pat_lh[1][i];
         lh_new[2] += boot_freq[i] * pat_lh[2][i];
     }
+}
+
+void PhyloTree::resampleLh(double **pat_lh, double *lh_new, int *rstream) {
+    //int nsite = getAlnNSite();
+    int nptn = getAlnNPattern();
+    int *boot_freq = aligned_alloc<int>(getAlnNPattern());
+    aln->createBootstrapAlignment(boot_freq, params->bootstrap_spec, rstream);
+    sumRellLh(pat_lh, lh_new, boot_freq, nptn);
     aligned_free(boot_freq);
 }
 
@@ -5390,17 +5394,43 @@ double PhyloTree::testOneBranch(double best_score, double *pattern_lh, int reps,
         outWarning("Branch where both NNIs violate constraint tree will show 100% SH-aLRT support");
     } else
 #ifdef _OPENMP
+    {
+    // Every call re-seeds each thread's stream with ran_seed + thread number, and the
+    // replicate loop is statically scheduled, so every branch draws exactly the same
+    // `times` pattern-frequency vectors, at a cost of nsite random numbers each. Draw
+    // them once per testAllBranches() traversal and replay them for the other branches:
+    // the same frequencies enter the same sums, so the supports are unchanged.
+    size_t cache_ints = (size_t)times * nptn;
+    bool cacheable = cache_ints > 0 && cache_ints <= ALRT_BOOT_FREQ_MAX_INTS;
+    if (cacheable && !(alrt_boot_freq_threads > 0 && alrt_boot_freq_times == times &&
+                       alrt_boot_freq_nptn == nptn && alrt_boot_freq_aln == aln)) {
+        alrt_boot_freq_threads = 0;
+        if (alrt_boot_freq.size() < cache_ints)
+            alrt_boot_freq.resize(cache_ints);
+    }
+    int team_size = 0;
 #pragma omp parallel
     {
-        int *rstream;
-        init_random(params->ran_seed + omp_get_thread_num(), false, &rstream);
+        // a different team size means a different replicate-to-stream assignment
+        bool replay = cacheable && alrt_boot_freq_threads == omp_get_num_threads();
+        int *rstream = nullptr;
+        if (!replay)
+            init_random(params->ran_seed + omp_get_thread_num(), false, &rstream);
+        if (omp_get_thread_num() == 0)
+            team_size = omp_get_num_threads();
 #pragma omp for reduction(+: lbp_support_int, SH_aLRT_support)
 #endif
     for (int i = 0; i < times; i++) {
         double lh_new[NUM_NNI];
         // resampling estimated log-likelihood (RELL)
 #ifdef _OPENMP
-        resampleLh(pat_lh, lh_new, rstream);
+        if (cacheable) {
+            int *boot_freq = alrt_boot_freq.data() + (size_t)i * nptn;
+            if (!replay)
+                aln->createBootstrapAlignment(boot_freq, params->bootstrap_spec, rstream);
+            sumRellLh(pat_lh, lh_new, boot_freq, nptn);
+        } else
+            resampleLh(pat_lh, lh_new, rstream);
 #else
         resampleLh(pat_lh, lh_new, randstream);
 #endif
@@ -5433,7 +5463,15 @@ double PhyloTree::testOneBranch(double best_score, double *pattern_lh, int reps,
             SH_aLRT_support++;
     }
 #ifdef _OPENMP
-    finish_random(rstream);
+    if (rstream)
+        finish_random(rstream);
+    }
+    if (cacheable) {
+        alrt_boot_freq_threads = team_size;
+        alrt_boot_freq_times = times;
+        alrt_boot_freq_nptn = nptn;
+        alrt_boot_freq_aln = aln;
+    }
     }
 #endif
     delete[] pat_lh[2];
@@ -5452,7 +5490,10 @@ double PhyloTree::testOneBranch(double best_score, double *pattern_lh, int reps,
 int PhyloTree::testAllBranches(int threshold, double best_score, double *pattern_lh, int reps, int lbp_reps, bool aLRT_test, bool aBayes_test,
         PhyloNode *node, PhyloNode *dad) {
     int num_low_support = 0;
+    bool top_level = !node;
     if (!node) {
+        // replicate frequencies are only reused within this traversal (see testOneBranch)
+        alrt_boot_freq_threads = 0;
         node = (PhyloNode*) root;
         root->neighbors[0]->node->name = "";
         if (isSuperTree()) {
@@ -5493,6 +5534,10 @@ int PhyloTree::testAllBranches(int threshold, double best_score, double *pattern
     FOR_NEIGHBOR_IT(node, dad, it)
         num_low_support += testAllBranches(threshold, best_score, pattern_lh, reps, lbp_reps, aLRT_test, aBayes_test, (PhyloNode*) (*it)->node, node);
 
+    if (top_level) {
+        alrt_boot_freq_threads = 0;
+        IntVector().swap(alrt_boot_freq);
+    }
     return num_low_support;
 }
 
