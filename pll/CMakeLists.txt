@@ -65,3 +65,9 @@ add_library(pll
   treeIO.c
   utils.c)
 endif()
+
+# The parsimony kernels are integer-only and spend much of their time in
+# __builtin_popcount, which without POPCNT compiles to a bit-twiddling sequence.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND NOT IQTREE_FLAGS MATCHES "novx")
+    set_source_files_properties(fastDNAparsimony.c PROPERTIES COMPILE_FLAGS "-mpopcnt")
+endif()
