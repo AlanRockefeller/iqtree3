@@ -3047,13 +3047,16 @@ void IQTree::refineBootTrees() {
             cout << "UFBoot tree " << sample+1 << ": " << boot_logl[sample] << " -> " << boot_tree->getCurScore() << endl;
         }
 
-        stringstream ostr;
+        int brtype = WT_TAXON_ID | WT_SORT_TAXA;
         if (params->print_ufboot_trees == 2) {
-            boot_tree->printTree(ostr, WT_TAXON_ID | WT_SORT_TAXA | WT_BR_LEN | WT_BR_LEN_SHORT);
-        } else {
-            boot_tree->printTree(ostr, WT_TAXON_ID | WT_SORT_TAXA);
+            brtype |= WT_BR_LEN | WT_BR_LEN_SHORT;
         }
-        boot_trees[sample] = ostr.str();
+        boot_trees[sample].clear();
+        if (!boot_tree->printSortedTreeString(boot_trees[sample], brtype)) {
+            stringstream ostr;
+            boot_tree->printTree(ostr, brtype);
+            boot_trees[sample] = ostr.str();
+        }
         boot_logl[sample] = boot_tree->curScore;
 
 
@@ -3937,13 +3940,16 @@ void IQTree::saveCurrentTree(double cur_logl) {
         }
     #endif
         if (find(took_tree.begin(), took_tree.end(), 1) != took_tree.end()) {
-            ostringstream ostr;
+            int brtype = WT_TAXON_ID + WT_SORT_TAXA;
             if (params->print_ufboot_trees == 2) {
-                printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA + WT_BR_LEN + WT_BR_LEN_SHORT);
-            } else {
-                printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA);
+                brtype += WT_BR_LEN + WT_BR_LEN_SHORT;
             }
-            string tree_str = ostr.str();
+            string tree_str;
+            if (!printSortedTreeString(tree_str, brtype)) {
+                ostringstream ostr;
+                printTree(ostr, brtype);
+                tree_str = ostr.str();
+            }
             for (int sample = sample_start; sample < sample_end; sample++)
                 if (took_tree[sample - sample_start])
                     boot_trees[sample] = tree_str;
