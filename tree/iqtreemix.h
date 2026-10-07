@@ -250,6 +250,9 @@ public:
      */
     virtual void printTree(ostream & out, int brtype = WT_BR_LEN) override;
 
+    /** this class prints trees its own way: use printTree() */
+    virtual bool printSortedTreeString(string &out, int brtype) override { return false; }
+
     /**
      *  Return best tree string from the candidate set
      *

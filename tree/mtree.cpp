@@ -21,6 +21,8 @@
 #include <iostream>
 //#include <fstream>
 #include <iterator>
+#include <charconv>
+#include <cmath>
 //#include <mtree.h>
 #include "pda/splitgraph.h"
 #include "utils/tools.h"
@@ -497,6 +499,118 @@ void MTree::printBranchLength(ostream &out, int brtype, bool print_slash, Neighb
         }
         out << "]";
     }
+}
+
+/**
+    append value as `out << value` would on a stream with this precision, in fixed notation
+    if `fixed` and in the default notation otherwise; that is printf's %.*f or %.*g, which
+    std::to_chars reproduces exactly
+*/
+static void appendStreamDouble(string &out, double value, int prec, bool fixed) {
+    char buf[128];
+    if (std::isfinite(value)) {
+        auto res = std::to_chars(buf, buf + sizeof(buf), value,
+            fixed ? std::chars_format::fixed : std::chars_format::general, prec);
+        if (res.ec == std::errc()) {
+            out.append(buf, res.ptr);
+            return;
+        }
+    }
+    ostringstream ss;
+    if (fixed)
+        ss.setf(std::ios::fixed, std::ios::floatfield);
+    ss.precision(prec);
+    ss << value;
+    out += ss.str();
+}
+
+/** printBranchLength() for the brtypes printSortedTreeString() accepts */
+static void appendSortedBranchLength(string &out, int brtype, Neighbor *length_nei, bool fixed) {
+    if (length_nei->length == -1.0)
+        return; // NA branch length
+    if (!(brtype & WT_BR_LEN))
+        return;
+    int prec = 10;
+    if (Params::getInstance().numeric_precision > 0)
+        prec = Params::getInstance().numeric_precision;
+    if (brtype & WT_BR_LEN_SHORT) prec = 6;
+    out += ':';
+    appendStreamDouble(out, length_nei->length, prec, fixed);
+}
+
+bool MTree::printSortedTreeString(string &out, int brtype) {
+    const int supported = WT_SORT_TAXA | WT_TAXON_ID | WT_BR_LEN | WT_BR_LEN_SHORT | WT_NEWLINE;
+    if (!(brtype & WT_SORT_TAXA) || (brtype & ~supported))
+        return false;
+    if (root->isLeaf()) {
+        if (root->neighbors[0]->node->isLeaf()) {
+            // tree has only 2 taxa!
+            out += '(';
+            printSortedTreeString(out, brtype, root, nullptr);
+            out += ',';
+            if (brtype & WT_TAXON_ID)
+                out += std::to_string(root->neighbors[0]->node->id);
+            else
+                out += root->neighbors[0]->node->name;
+            if (brtype & WT_BR_LEN)
+                out += ":0";
+            out += ')';
+        } else
+            // tree has more than 2 taxa
+            printSortedTreeString(out, brtype, root->neighbors[0]->node, nullptr);
+    } else
+        printSortedTreeString(out, brtype, root, nullptr);
+    out += ';';
+    if (brtype & WT_NEWLINE)
+        out += '\n';
+    return true;
+}
+
+int MTree::printSortedTreeString(string &out, int brtype, Node *node, Node *dad) {
+    int smallest_taxid = leafNum;
+    if (node->isLeaf()) {
+        smallest_taxid = node->id;
+        if (brtype & WT_TAXON_ID)
+            out += std::to_string(node->id);
+        else
+            out += node->name;
+        // printTree() switches this leaf's stream to fixed notation
+        appendSortedBranchLength(out, brtype, node->neighbors[0], true);
+        return smallest_taxid;
+    }
+    out += '(';
+    Neighbor *length_nei = nullptr;
+    vector<pair<int, string> > subtrees;
+    FOR_NEIGHBOR_IT(node, dad, it) {
+        if ((*it)->node->name != ROOT_NAME) {
+            string str;
+            int id = printSortedTreeString(str, brtype, (*it)->node, node);
+            subtrees.emplace_back(id, std::move(str));
+        } else
+            length_nei = (*it);
+    } else {
+        length_nei = (*it);
+    }
+    // printTree() collects the subtrees in a set ordered by smallest taxon ID, which keeps
+    // the first of equal IDs
+    stable_sort(subtrees.begin(), subtrees.end(),
+        [](const pair<int, string> &a, const pair<int, string> &b) { return a.first < b.first; });
+    subtrees.erase(unique(subtrees.begin(), subtrees.end(),
+        [](const pair<int, string> &a, const pair<int, string> &b) { return a.first == b.first; }),
+        subtrees.end());
+    smallest_taxid = subtrees.begin()->first;
+    for (size_t i = 0; i < subtrees.size(); i++) {
+        if (i > 0) out += ',';
+        out += subtrees[i].second;
+    }
+    out += ')';
+    if (!node->name.empty())
+        out += node->name;
+    if (dad != nullptr || length_nei) {
+        // an internal node's stream is never switched to fixed notation
+        appendSortedBranchLength(out, brtype, length_nei, false);
+    }
+    return smallest_taxid;
 }
 
 int MTree::printTree(ostream &out, int brtype, Node *node, Node *dad)
