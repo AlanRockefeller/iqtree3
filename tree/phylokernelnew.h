@@ -2446,7 +2446,7 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     double all_lh(0.0), all_df(0.0), all_ddf(0.0), all_prob_const(0.0), all_df_const(0.0), all_ddf_const(0.0);
     // One packet. The sums are parameters so that inside the OpenMP loop they bind to the
     // thread's reduction copies.
-    auto derv_packet = [&](int packet_id, double &all_lh, double &all_df, double &all_ddf,
+    auto derv_packet = [=, &cat_rate, &cat_prop, &mix_addr_nstates_malign, &mix_addr_malign, &cat_id](int packet_id, double &all_lh, double &all_df, double &all_ddf,
                            double &all_prob_const, double &all_df_const, double &all_ddf_const) {
         size_t ptn_lower = limits[packet_id];
         size_t ptn_upper = limits[packet_id+1];
