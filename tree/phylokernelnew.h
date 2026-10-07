@@ -37,6 +37,66 @@
     @param[out] X sum of elements of A
 */
 #ifndef KERNEL_FIX_STATES
+namespace {
+
+/**
+    Interleave the tip partial likelihoods of W patterns, one vector lane each:
+    vec[i*W + x] = tips[x][i] for i < len. Only copies values. The kernels used to do
+    this one double at a time, so every vector they then loaded from vec had been
+    written by W separate stores, which the CPU cannot forward to a vector load.
+    Kept file-local: this header is compiled once per instruction set.
+*/
+template <size_t W>
+struct TipLhInterleave {
+    static inline void run(double *vec, const double *const *tips, size_t len) {
+        for (size_t x = 0; x < W; x++) {
+            double *v = vec + x;
+            const double *t = tips[x];
+            for (size_t i = 0; i < len; i++, v += W)
+                *v = t[i];
+        }
+    }
+};
+
+#if defined(__AVX__) && !defined(__ARM_NEON)
+/** four patterns: a 4x4 transpose per four values */
+template <>
+struct TipLhInterleave<4> {
+    static inline void run(double *vec, const double *const *tips, size_t len) {
+        if (len % 4 != 0) {
+            for (size_t x = 0; x < 4; x++) {
+                double *v = vec + x;
+                const double *t = tips[x];
+                for (size_t i = 0; i < len; i++, v += 4)
+                    *v = t[i];
+            }
+            return;
+        }
+        for (size_t i = 0; i < len; i += 4) {
+            __m256d r0 = _mm256_loadu_pd(tips[0] + i); // a0 a1 a2 a3
+            __m256d r1 = _mm256_loadu_pd(tips[1] + i); // b0 b1 b2 b3
+            __m256d r2 = _mm256_loadu_pd(tips[2] + i); // c0 c1 c2 c3
+            __m256d r3 = _mm256_loadu_pd(tips[3] + i); // d0 d1 d2 d3
+            __m256d u0 = _mm256_unpacklo_pd(r0, r1);   // a0 b0 a2 b2
+            __m256d u1 = _mm256_unpackhi_pd(r0, r1);   // a1 b1 a3 b3
+            __m256d u2 = _mm256_unpacklo_pd(r2, r3);   // c0 d0 c2 d2
+            __m256d u3 = _mm256_unpackhi_pd(r2, r3);   // c1 d1 c3 d3
+            _mm256_storeu_pd(vec + 4*i,      _mm256_permute2f128_pd(u0, u2, 0x20)); // a0 b0 c0 d0
+            _mm256_storeu_pd(vec + 4*i + 4,  _mm256_permute2f128_pd(u1, u3, 0x20)); // a1 b1 c1 d1
+            _mm256_storeu_pd(vec + 4*i + 8,  _mm256_permute2f128_pd(u0, u2, 0x31)); // a2 b2 c2 d2
+            _mm256_storeu_pd(vec + 4*i + 12, _mm256_permute2f128_pd(u1, u3, 0x31)); // a3 b3 c3 d3
+        }
+    }
+};
+#endif
+
+template <class VectorClass>
+inline void interleaveTipLh(double *vec, const double *const *tips, size_t len) {
+    TipLhInterleave<sizeof(VectorClass) / sizeof(double)>::run(vec, tips, len);
+}
+
+} // namespace
+
 template <class VectorClass, const bool append>
 inline void sumVec(VectorClass *A, VectorClass &X, size_t N)
 {
@@ -1702,6 +1762,7 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
             } else {
                 VectorClass *vleft  = (VectorClass*)vec_left;
                 VectorClass *vright = (VectorClass*)vec_right;
+                const double *tips_left[VectorClass::size()], *tips_right[VectorClass::size()];
                 // load data for tip
                 for (size_t x = 0; x < VectorClass::size(); x++) {
                     int leftState;
@@ -1727,17 +1788,11 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                         leftState  = unknown;
                         rightState = unknown;
                     }
-                    const double* tip_left  = partial_lh_left  + block*leftState;
-                    const double* tip_right = partial_lh_right + block*rightState;
-                    double* this_vec_left = vec_left+x;
-                    double* this_vec_right = vec_right+x;
-                    for (size_t i = 0; i < block; i++) {
-                        *this_vec_left = tip_left[i];
-                        *this_vec_right = tip_right[i];
-                        this_vec_left += VectorClass::size();
-                        this_vec_right += VectorClass::size();
-                    }
+                    tips_left[x]  = partial_lh_left  + block*leftState;
+                    tips_right[x] = partial_lh_right + block*rightState;
                 }
+                interleaveTipLh<VectorClass>(vec_left, tips_left, block);
+                interleaveTipLh<VectorClass>(vec_right, tips_right, block);
 
 
                 for (size_t c = 0; c < ncat_mix; c++) {
@@ -1835,6 +1890,7 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
             } else {
                 VectorClass *vleft = (VectorClass*)vec_left;
+                const double *tips[VectorClass::size()];
                 // load data for tip
                 for (size_t x = 0; x < VectorClass::size(); x++) {
                     int state;
@@ -1851,13 +1907,9 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                     } else {
                         state = unknown;
                     }
-                    const double *tip = partial_lh_left + block*state;
-                    double *this_vec_left = vec_left+x;
-                    for (size_t i = 0; i < block; i++) {
-                        *this_vec_left = tip[i];
-                        this_vec_left += VectorClass::size();
-                    }
+                    tips[x] = partial_lh_left + block*state;
                 }
+                interleaveTipLh<VectorClass>(vec_left, tips, block);
 
                 double *eright_ptr = eright;
                 for (size_t c = 0; c < ncat_mix; c++) {
@@ -2122,6 +2174,7 @@ void PhyloTree::computeLikelihoodBufferGenericSIMD(PhyloNeighbor *dad_branch, Ph
             VectorClass *theta = (VectorClass*)(theta_all + offset);
             //load tip vector
             if (!SITE_MODEL) {
+                const double *tips[VectorClass::size()];
                 for (size_t i = 0; i < VectorClass::size(); i++) {
                     int state;
                     if (ptn+i < orig_nptn) {
@@ -2137,13 +2190,9 @@ void PhyloTree::computeLikelihoodBufferGenericSIMD(PhyloNeighbor *dad_branch, Ph
                     } else {
                         state = unknown;
                     }
-                    const double *this_tip_partial_lh = tip_partial_lh + tip_block*state;
-                    double *this_vec_tip = vec_tip+i;
-                    for (size_t c = 0; c < tip_block; c++) {
-                        *this_vec_tip = this_tip_partial_lh[c];
-                        this_vec_tip += VectorClass::size();
-                    }
+                    tips[i] = tip_partial_lh + tip_block*state;
                 }
+                interleaveTipLh<VectorClass>(vec_tip, tips, tip_block);
             }
             VectorClass *lh_tip;
             if (SITE_MODEL) {
@@ -2920,6 +2969,7 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
                     }
                 } else { // normal model
                     //load tip vector
+                    const double *tips[VectorClass::size()];
                     for (size_t i = 0; i < VectorClass::size(); i++) {
                         int state;
                         if (ptn+i < orig_nptn) {
@@ -2935,13 +2985,9 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
                         } else {
                             state = aln->STATE_UNKNOWN;
                         }
-                        const double *lh_tip = partial_lh_node + block*state;
-                        double *this_vec_tip = vec_tip+i;
-                        for (size_t c = 0; c < block; c++) {
-                            *this_vec_tip = lh_tip[c];
-                            this_vec_tip += VectorClass::size();
-                        }
+                        tips[i] = partial_lh_node + block*state;
                     }
+                    interleaveTipLh<VectorClass>(vec_tip, tips, block);
                     // compute likelihood per category
                     for (size_t c = 0; c < ncat_mix; c++) {
     #ifdef KERNEL_FIX_STATES
