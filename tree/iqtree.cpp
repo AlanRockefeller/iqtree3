@@ -3879,15 +3879,11 @@ void IQTree::saveCurrentTree(double cur_logl) {
 //        int ptn;
 //        int updated = 0;
 //        int nsamples = boot_samples.size();
-        ostringstream ostr;
-        string tree_str;
         setRootNode(params->root);
-        if (params->print_ufboot_trees == 2) {
-            printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA + WT_BR_LEN + WT_BR_LEN_SHORT);
-        } else {
-            printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA);
-        }
-        tree_str = ostr.str();
+        // Printing the tree is costly (every subtree is sorted, and with -bnni every branch
+        // length is formatted) and most candidate trees win no replicate, so it is printed
+        // after the loop, only if some replicate took it. The loop does not change the tree.
+        vector<char> took_tree(sample_end - sample_start, 0);
 
     #ifdef _OPENMP
         int rand_seed = random_int(1000);
@@ -3923,13 +3919,25 @@ void IQTree::saveCurrentTree(double cur_logl) {
                 }
                 boot_logl[sample] = max(boot_logl[sample], rell);
                 boot_orig_logl[sample] = cur_logl;
-                boot_trees[sample] = tree_str;
+                took_tree[sample - sample_start] = 1;
             }
         }
     #ifdef _OPENMP
         finish_random(rstream);
         }
     #endif
+        if (find(took_tree.begin(), took_tree.end(), 1) != took_tree.end()) {
+            ostringstream ostr;
+            if (params->print_ufboot_trees == 2) {
+                printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA + WT_BR_LEN + WT_BR_LEN_SHORT);
+            } else {
+                printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA);
+            }
+            string tree_str = ostr.str();
+            for (int sample = sample_start; sample < sample_end; sample++)
+                if (took_tree[sample - sample_start])
+                    boot_trees[sample] = tree_str;
+        }
     }
     if (Params::getInstance().print_tree_lh) {
         out_treelh << cur_logl;
