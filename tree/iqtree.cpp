@@ -2648,8 +2648,12 @@ double IQTree::doTreeSearch() {
 
         // print UFBoot trees every 10 iterations
 
-        saveCheckpoint();
-        checkpoint->dump();
+        // as in refineBootTrees(): only serialize the state when the dump will write it;
+        // runTreeReconstruction() saves the final state after the search
+        if (checkpoint->isDumpDue()) {
+            saveCheckpoint();
+            checkpoint->dump();
+        }
 
         if (bestcandidate_changed) {
             printBestCandidateTree();
@@ -3067,13 +3071,19 @@ void IQTree::refineBootTrees() {
             cout << sample+1 << " samples done" << endl;
         }
 
-        saveCheckpoint();
+        // Saving serializes every UFBoot tree, which costs about as much as refining one,
+        // and nothing reads the in-memory checkpoint before it is dumped (the full state is
+        // saved again after this loop), so only refresh it when the dump will write it.
+        bool dump_due = checkpoint->isDumpDue();
+        if (dump_due)
+            saveCheckpoint();
         checkpoint->startStruct("UFBoot");
         refined_samples = sample;
         CKP_SAVE(refined_samples);
         checkpoint->endStruct();
 
-        checkpoint->dump();
+        if (dump_due)
+            checkpoint->dump();
 
 	}
     

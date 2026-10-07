@@ -143,6 +143,10 @@ void Checkpoint::dump(ostream &out) {
     }
 }
 
+bool Checkpoint::isDumpDue() {
+    return filename != "" && !(getRealTime() < prev_dump_time + dump_interval);
+}
+
 void Checkpoint::dump(bool force) {
     if (filename == "")
         return;
