@@ -1242,13 +1242,11 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
         
         if (!Params::getInstance().buffer_mem_save) {
 #ifdef _OPENMP
-#pragma omp parallel if (num_info >= 3) num_threads(num_threads)
+        if (num_info >= 3 && num_threads > 1) {
+#pragma omp parallel num_threads(num_threads)
         {
             VectorClass *buffer_tmp = (VectorClass*)buffer + aln->num_states*omp_get_thread_num();
 #pragma omp for schedule(static)
-#else
-            VectorClass *buffer_tmp = (VectorClass*)buffer;
-#endif
             for (int i = 0; i < num_info; i++) {
             #ifdef KERNEL_FIX_STATES
                 computePartialInfo<VectorClass, nstates>(traversal_info[i], buffer_tmp);
@@ -1256,9 +1254,20 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
                 computePartialInfo<VectorClass>(traversal_info[i], buffer_tmp);
             #endif
             }
-#ifdef _OPENMP
         }
+        } else
 #endif
+        {
+            // one thread (the team of a serialized region is thread 0): no OpenMP runtime
+            VectorClass *buffer_tmp = (VectorClass*)buffer;
+            for (int i = 0; i < num_info; i++) {
+            #ifdef KERNEL_FIX_STATES
+                computePartialInfo<VectorClass, nstates>(traversal_info[i], buffer_tmp);
+            #else
+                computePartialInfo<VectorClass>(traversal_info[i], buffer_tmp);
+            #endif
+            }
+        }
         }
     }
 
@@ -1269,8 +1278,16 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
         computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
 
         #ifdef _OPENMP
+        if (num_threads > 1) {
         #pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+        for (int packet_id = 0; packet_id < num_packets; ++packet_id) {
+            for (auto it = traversal_info.begin(); it != traversal_info.end(); it++) {
+                computePartialLikelihood(*it, limits[packet_id], limits[packet_id+1], packet_id);
+            }
+        }
+        } else
         #endif
+        // one thread: the same packets in the same order, without the OpenMP runtime
         for (int packet_id = 0; packet_id < num_packets; ++packet_id) {
             for (auto it = traversal_info.begin(); it != traversal_info.end(); it++) {
                 computePartialLikelihood(*it, limits[packet_id], limits[packet_id+1], packet_id);
@@ -2378,10 +2395,10 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     }
 
     double all_lh(0.0), all_df(0.0), all_ddf(0.0), all_prob_const(0.0), all_df_const(0.0), all_ddf_const(0.0);
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) reduction(+:all_lh,all_df,all_ddf,all_prob_const,all_df_const,all_ddf_const)
-#endif
-    for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+    // One packet. The sums are parameters so that inside the OpenMP loop they bind to the
+    // thread's reduction copies.
+    auto derv_packet = [&](int packet_id, double &all_lh, double &all_df, double &all_ddf,
+                           double &all_prob_const, double &all_df_const, double &all_ddf_const) {
         size_t ptn_lower = limits[packet_id];
         size_t ptn_upper = limits[packet_id+1];
 
@@ -2577,7 +2594,20 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
             }
 
         } // else isMixlen()
-    } // FOR packet
+    }; // packet
+#ifdef _OPENMP
+    if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) reduction(+:all_lh,all_df,all_ddf,all_prob_const,all_df_const,all_ddf_const)
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            derv_packet(packet_id, all_lh, all_df, all_ddf, all_prob_const, all_df_const, all_ddf_const);
+    } else
+#endif
+    // This runs for every Newton step of every branch. A one-thread team would run the
+    // packets in order into reduction copies that start at +0.0 (so never end at -0.0) and
+    // then add them to these +0.0 variables: the same values as summing here directly,
+    // without entering the OpenMP runtime.
+    for (int packet_id = 0; packet_id < num_packets; packet_id++)
+        derv_packet(packet_id, all_lh, all_df, all_ddf, all_prob_const, all_df_const, all_ddf_const);
     gradient_vector[branch_id] = all_df;
     hessian_diagonal[branch_id] = all_ddf;
 
