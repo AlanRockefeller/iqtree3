@@ -1980,7 +1980,69 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
         VectorClass *partial_lh_tmp
             = (VectorClass*)(buffer_partial_lh_ptr + thread_buf_size * packet_id);
-		for (size_t ptn = ptn_lower; ptn < ptn_upper; ptn+=VectorClass::size()) {
+        size_t ptn = ptn_lower;
+#ifdef KERNEL_FIX_STATES
+        if (!SAFE_NUMERIC && !SITE_MODEL && nstates == 4) {
+            // Two pattern blocks per pass: each block makes exactly the calls of the
+            // single-block loop below, on the same operands, but the per-category
+            // eigenvector coefficients are loaded once for both. The blocks write
+            // disjoint patterns, so the order between them does not matter.
+            for (; ptn + 2*VectorClass::size() <= ptn_upper; ptn += 2*VectorClass::size()) {
+                const size_t ptn_b = ptn + VectorClass::size();
+                VectorClass *partial_lh_a = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
+                VectorClass *partial_lh_b = (VectorClass*)(dad_branch->partial_lh + (ptn_b*block));
+                VectorClass *left_a = (VectorClass*)(left->partial_lh + (ptn*block));
+                VectorClass *left_b = (VectorClass*)(left->partial_lh + (ptn_b*block));
+                VectorClass *right_a = (VectorClass*)(right->partial_lh + (ptn*block));
+                VectorClass *right_b = (VectorClass*)(right->partial_lh + (ptn_b*block));
+                VectorClass lh_max_a = 0.0, lh_max_b = 0.0;
+                for (size_t i = 0; i < 2*VectorClass::size(); i++)
+                    dad_branch->scale_num[ptn+i] = left->scale_num[ptn+i] + right->scale_num[ptn+i];
+                double *eleft_ptr = eleft;
+                double *eright_ptr = eright;
+                for (size_t c = 0; c < ncat_mix; c++) {
+                    double *inv_evec_ptr = inv_evec + mix_addr_malign[c];
+                    VectorClass tmp_a[nstates], tmp_b[nstates], out_a[nstates], out_b[nstates];
+                    for (size_t x = 0; x < nstates; x++) {
+                        dotProductDualVec<VectorClass, double, nstates, FMA>(eleft_ptr, left_a, eright_ptr, right_a, tmp_a[x]);
+                        dotProductDualVec<VectorClass, double, nstates, FMA>(eleft_ptr, left_b, eright_ptr, right_b, tmp_b[x]);
+                        eleft_ptr += nstates;
+                        eright_ptr += nstates;
+                    }
+                    productVecMat<VectorClass, double, nstates, FMA>(tmp_a, inv_evec_ptr, out_a, lh_max_a);
+                    productVecMat<VectorClass, double, nstates, FMA>(tmp_b, inv_evec_ptr, out_b, lh_max_b);
+                    for (size_t x = 0; x < nstates; x++) {
+                        partial_lh_a[x] = out_a[x];
+                        partial_lh_b[x] = out_b[x];
+                    }
+                    left_a += nstates;
+                    left_b += nstates;
+                    right_a += nstates;
+                    right_b += nstates;
+                    partial_lh_a += nstates;
+                    partial_lh_b += nstates;
+                }
+                // the single-block loop's scaling check, for each block
+                for (size_t b = 0; b < 2; b++) {
+                    const size_t ptn_x = b ? ptn_b : ptn;
+                    VectorClass lh_max = b ? lh_max_b : lh_max_a;
+                    auto underflown = (lh_max < SCALING_THRESHOLD) & (VectorClass().load_a(&ptn_invar[ptn_x]) == 0.0);
+                    if (horizontal_or(underflown)) { // at least one site has numerical underflown
+                        for (size_t x = 0; x < VectorClass::size(); x++)
+                        if (underflown[x]) {
+                            double *partial_lh = dad_branch->partial_lh + (ptn_x*block + x);
+                            // now do the likelihood scaling
+                            for (size_t i = 0; i < block; i++) {
+                                partial_lh[i*VectorClass::size()] = ldexp(partial_lh[i*VectorClass::size()], SCALING_THRESHOLD_EXP);
+                            }
+                            dad_branch->scale_num[ptn_x+x] += 1;
+                        }
+                    }
+                }
+            }
+        }
+#endif
+		for (; ptn < ptn_upper; ptn+=VectorClass::size()) {
 			VectorClass *partial_lh = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
 			VectorClass *partial_lh_left = (VectorClass*)(left->partial_lh + (ptn*block));
 			VectorClass *partial_lh_right = (VectorClass*)(right->partial_lh + (ptn*block));
