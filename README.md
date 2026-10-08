@@ -105,9 +105,10 @@ kernels; those cannot change their arithmetic without changing results.
 
 | ref | contents |
 |---|---|
-| [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) | v3.1.4 (`63c330d`, also upstream `master` on 2026-10-08) + the eleven code commits. This is the branch to merge or review. |
-| [`exact-speedups`](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) (default) | `speedups` + a version commit (`3.1.4-dikarya1`) + the test harness and this documentation |
-| [`v3.1.4-dikarya1`](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) | the exact source of the build running in production: `speedups` + the version commit |
+| [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) | v3.1.4 (`63c330d`, also upstream `master` on 2026-10-08) + the eleven code commits + the test harness and this documentation. The version string stays `3.1.4`. |
+| [`upstream-pr`](https://github.com/AlanRockefeller/iqtree3/tree/upstream-pr) | v3.1.4 + the eleven code commits only: the branch to merge or open a pull request from |
+| [`exact-speedups`](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) (default) | the eleven code commits + a version commit (`3.1.4-dikarya1`) + the test harness and this documentation |
+| [`v3.1.4-dikarya1`](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) | the exact source of the build running in production: the eleven code commits + the version commit |
 
 The eleven commits, each with its exactness argument and measurement in the message:
 
@@ -146,8 +147,9 @@ IQ-TREE, so the guarantee covers `-T 1`.
 
 ## For the IQ-TREE maintainers
 
-`git diff v3.1.4 speedups` is the whole change against upstream: 14 files, 477 lines added and
-86 removed.
+`git diff master upstream-pr` is the whole code change against upstream: 14 files, 477 lines
+added and 86 removed. (`speedups` adds only `EXACT-SPEEDUPS.md`, this README section and
+`test_scripts/exact-speedups/`.)
 The commits are independent enough to take one at a time; 1, 2 and 4 are where most of the
 time goes. Commit 6 is an optional debug aid, and commit 3 assumes POPCNT (every x86-64 CPU
 since about 2008); drop it if the release must run on older CPUs. Some files use CRLF line
