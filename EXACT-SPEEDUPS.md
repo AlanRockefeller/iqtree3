@@ -101,9 +101,11 @@ operation is reordered, fused or split.
 
 ## The changes
 
-The branch [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) is these eleven commits on top of v3.1.4
-(`63c330d`, which is also `master` as of 2026-10-08). Gains quoted per change are from
-interleaved runs on the machine above, which is shared and noisy at the 2-4% level.
+The branch [`upstream-pr`](https://github.com/AlanRockefeller/iqtree3/tree/upstream-pr) is exactly these eleven commits on top of
+v3.1.4 (`63c330d`, which is also `master` as of 2026-10-08): the branch to merge or open a
+pull request from. [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) is the same plus this documentation and the
+test harness. Gains quoted per change are from interleaved runs on the machine above, which
+is shared and noisy at the 2-4% level.
 
 ### 1. SH-aLRT: draw the bootstrap resamples once per traversal
 
@@ -264,7 +266,7 @@ of the single-block loop on the same operands, with its temporaries in registers
 runs the same scaling check; only the coefficient loads are shared. The blocks write
 disjoint patterns. 0.7% on Quick Tree, 2% on advanced runs, 6% on a 489-taxon GTR+F+R6 tree.
 
-### Version (not part of `speedups`)
+### Version (not part of `upstream-pr` or `speedups`)
 
 The [`exact-speedups`](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) branch and the
 [`v3.1.4-dikarya1`](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) tag add one commit that changes
