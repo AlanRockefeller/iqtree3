@@ -1,3 +1,138 @@
+# IQ-TREE 3.1.4 with exact speedups (unofficial fork)
+
+> [!WARNING]
+> **This is an unofficial fork of IQ-TREE. It is not affiliated with or endorsed by the
+> IQ-TREE authors.**
+>
+> - Official IQ-TREE: **http://www.iqtree.org**
+> - Official source: **https://github.com/iqtree/iqtree3**
+>
+> For general use, install the official release. Please don't report problems with this
+> fork to the IQ-TREE developers. Open an issue here instead.
+
+This fork makes IQ-TREE 3.1.4 faster under one constraint: for the same input, options
+and seed, run with `-T 1`, **every output is byte-identical to the official 3.1.4
+binary**: the tree, UFBoot consensus and split supports, SH-aLRT values, fitted model
+parameters, distances, the `.iqtree` report and the log (apart from timings and the version
+banner). Only how fast the result arrives changes.
+
+Most of the gain comes from work stock IQ-TREE does and then throws away: it redraws the
+same 1000 SH-aLRT bootstrap resamples for every branch, formats every UFBoot candidate tree
+as a string before checking whether any replicate keeps it, and re-serializes all 1000
+UFBoot trees into the checkpoint after every refined tree although the file is written at
+most once a minute. The rest is in the likelihood kernels (tip data built with scalar stores
+the CPU cannot forward to vector loads, OpenMP runtime calls at one thread) and is likewise
+exact: no floating-point operation is reordered, fused or split.
+
+**[`EXACT-SPEEDUPS.md`](EXACT-SPEEDUPS.md) is the full write-up**: what each change does,
+why it cannot change a result, how that was verified, the measurements, what was tried and
+dropped, and some observations about stock IQ-TREE.
+
+## Results
+
+Measured on the server that runs [Dikarya](https://dikarya.us), a phylogenetics web service
+for fungal ITS barcodes: Intel Xeon E5-2690 v4 (Broadwell-EP), 2 vCPUs of a VM, AVX2 + FMA,
+no AVX-512. Official `iqtree-3.1.4-Linux-intel` binary against `v3.1.4-dikarya1`, `-T 1`,
+the two builds run alternately on each input.
+
+Real alignments submitted to the service (DNA, ITS; not published):
+
+| workload | official 3.1.4 | this fork | speedup |
+|---|---|---|---|
+| `-m GTR+G -n 5 --alrt 1000`, 48 alignments (8-969 sequences) | median 3.94 s | median 2.49 s | median 1.63x (1.28x-2.29x) |
+| `-m MFP -B 1000 --bnni --alrt 1000` (and K2P, `-B 5000`), 19 alignments | 4,288 s total | 2,783 s total | median 1.75x (1.18x-2.66x) |
+| `-m GTR+F+R6 -n 3`, 489 sequences (kernel-bound; baseline: stock rebuild) | 257.9 s | 210.9 s | 1.22x |
+
+All 67 real runs produced identical outputs, as did 36 runs covering every option
+combination the service uses.
+
+Synthetic alignments, reproducible with `test_scripts/exact-speedups/compare-builds.sh`:
+
+| alignment | options | official 3.1.4 | this fork | speedup | outputs |
+|---|---|---|---|---|---|
+| synthetic, 150 x 700 | `-m GTR+G -n 5 --alrt 1000` | 6.04 s | 4.04 s | 1.50x | identical |
+| synthetic, 150 x 700 | `-m MFP -B 1000 --bnni --alrt 1000` | 260.9 s | 178.7 s | 1.46x | identical |
+| synthetic, 150 x 700 | `-m HKY+G -B 1000 --alrt 1000` | 65.5 s | 48.7 s | 1.34x | identical |
+| `example/example.phy`, 17 x 1998 | `-m GTR+G -n 5 --alrt 1000` | 1.39 s | 0.91 s | 1.53x | identical |
+| `example/example.phy`, 17 x 1998 | `-m MFP -B 1000 --bnni --alrt 1000` | 25.6 s | 19.0 s | 1.35x | identical |
+| `example/example.phy`, 17 x 1998 | `-m HKY+G -B 1000 --alrt 1000` | 6.53 s | 5.44 s | 1.20x | identical |
+| synthetic, 400 x 700 | `-m GTR+G -n 5 --alrt 1000` | 24.5 s | 17.4 s | 1.41x | identical |
+| synthetic, 400 x 700 | `-m GTR+G -B 1000 --bnni --alrt 1000` | 996.8 s | 660.4 s | 1.51x | identical |
+
+Commands: `compare-builds.sh OFFICIAL NEW 150 700`; `compare-builds.sh OFFICIAL NEW 0 0
+example/example.phy`; `OPTS=$'-m GTR+G -n 5 --alrt 1000\n-m GTR+G -B 1000 --bnni --alrt 1000'
+compare-builds.sh OFFICIAL NEW 400 700` (seed 20261007, single runs).
+
+The gain is largest where IQ-TREE did avoidable work (SH-aLRT, UFBoot) and smallest on
+large trees and pattern-rich alignments, whose time is almost all in the likelihood
+kernels; those cannot change their arithmetic without changing results.
+
+## Branches and tags
+
+| ref | contents |
+|---|---|
+| [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) | v3.1.4 (`63c330d`, also upstream `master` on 2026-10-08) + the eleven code commits. This is the branch to merge or review. |
+| [`exact-speedups`](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) (default) | `speedups` + a version commit (`3.1.4-dikarya1`) + the test harness and this documentation |
+| [`v3.1.4-dikarya1`](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) | the exact source of the build running in production: `speedups` + the version commit |
+
+The eleven commits, each with its exactness argument and measurement in the message:
+
+1. SH-aLRT: draw the replicate pattern frequencies once per traversal
+2. UFBoot: print a candidate tree only if some replicate takes it
+3. PLL parsimony: compile `fastDNAparsimony.c` with `-mpopcnt` on x86-64
+4. UFBoot: refresh the checkpoint only when it is about to be dumped
+5. UFBoot: print sorted topology strings without per-subtree streams
+6. SH-aLRT: `IQTREE_ALRT_CACHE_CHECK` debug build for the replicate cache
+7. Node: define `isLeaf()`, `degree()` and `findNeighbor()` in the header
+8. Kernels: skip the OpenMP runtime when the tree has one thread
+9. Kernels: interleave tip partial likelihoods with vector transposes
+10. Kernels: capture the Derv packet's inputs by value
+11. Kernels: two pattern blocks per pass for internal-internal partials
+
+## Building and checking
+
+Build exactly as the release is built (see `.github/workflows/ci.yaml`): clang 22,
+`-DIQTREE_FLAGS=static`, Ubuntu 22.04's Eigen and Boost headers.
+
+```bash
+git clone --branch exact-speedups --recurse-submodules https://github.com/AlanRockefeller/iqtree3.git
+cd iqtree3 && mkdir build && cd build
+cmake .. -DIQTREE_FLAGS=static -DUSE_MUTSEL=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_C_COMPILER=clang-22 -DCMAKE_CXX_COMPILER=clang++-22
+make -j iqtree3
+cd .. && test_scripts/exact-speedups/compare-builds.sh /path/to/official/iqtree3 build/iqtree3
+```
+
+The compiler matters for the identity check: the release is built with clang, whose
+default `-ffp-contract=on` fuses `a*b+c` differently from gcc's default, so compare against
+a reference built with the same compiler and flags. The changes themselves are
+compiler-independent; the x86 kernel code is guarded by `__AVX__`, and `-mpopcnt` applies
+only to x86-64. Multi-threaded runs (`-T` > 1) are not reproducible run to run even in stock
+IQ-TREE, so the guarantee covers `-T 1`.
+
+## For the IQ-TREE maintainers
+
+`git diff v3.1.4 speedups` is the whole change against upstream: 14 files, 477 lines added and
+86 removed.
+The commits are independent enough to take one at a time; 1, 2 and 4 are where most of the
+time goes. Commit 6 is an optional debug aid, and commit 3 assumes POPCNT (every x86-64 CPU
+since about 2008); drop it if the release must run on older CPUs. Some files use CRLF line
+endings, so apply the series with `git am --keep-cr`.
+
+`EXACT-SPEEDUPS.md` also lists a few things noticed in stock 3.1.4 and left alone, among
+them a hang of the official binary when an LLVM toolchain is on `LD_LIBRARY_PATH`, and RapidNJ
+using every core under `-T 1`.
+
+## Credits
+
+- The changes in this fork were designed, implemented, verified and benchmarked by Claude
+  Code (Claude Opus 5.5, Anthropic), with Alan Rockefeller directing the work for Dikarya.
+- IQ-TREE is by Bui Quang Minh, Thomas Wong, Nhan Ly-Trong, Huaiyan Ren and many
+  contributors (see below). Please cite IQ-TREE as its authors ask.
+- License: GPL-2.0, the same as IQ-TREE.
+
+---
+
 IQ-TREE
 =======
 
