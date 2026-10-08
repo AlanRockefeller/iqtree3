@@ -1,5 +1,57 @@
 # IQ-TREE 3.1.4 with exact speedups (unofficial fork)
 
+**Same trees, faster.** This fork runs IQ-TREE 3.1.4 about **1.6-1.8x faster** on typical
+SH-aLRT and UFBoot analyses, and every output is **byte-identical to the official 3.1.4
+release** for the same input, options and seed at `-T 1`: the trees, branch supports, model
+parameters, log-likelihoods, report and log (apart from timings and the version line).
+Nothing about the results changes, only how long you wait for them.
+
+## Why this repo exists
+
+[Dikarya](https://dikarya.us) is a web service that builds phylogenetic trees from fungal ITS
+barcode sequences with IQ-TREE: over a thousand quick trees a month
+(`-m GTR+G -n 5 --alrt 1000`) plus longer ModelFinder and ultrafast bootstrap analyses
+(`-m MFP -B 1000 --bnni --alrt 1000`). Profiling the official binary showed that a large part
+of its time went to work whose result is thrown away. We removed that work without changing
+any arithmetic, have run the result in production since 2026-10-08, and publish it here so
+that the IQ-TREE developers can consider the changes for the official release and anyone else
+can use or check them.
+
+## How much faster
+
+| analysis (real Dikarya alignments, `-T 1`) | median speedup per run | range |
+|---|---|---|
+| quick tree, `-m GTR+G -n 5 --alrt 1000` (48 alignments) | **1.63x** (3.94 s to 2.49 s) | 1.28x-2.29x |
+| ModelFinder + UFBoot, `-m MFP -B 1000 --bnni --alrt 1000` (19 alignments) | **1.75x** | 1.18x-2.66x |
+| very large trees (400-1,000 sequences), mostly likelihood computation | 1.2-1.5x | |
+
+Intel Xeon E5-2690 v4 (Broadwell), official `iqtree-3.1.4-Linux-intel` binary against this
+fork. Reproducible benchmarks on synthetic data and on IQ-TREE's own `example.phy` are in
+[Results](#results) below.
+
+## How we did it
+
+- **SH-aLRT:** for every branch, stock IQ-TREE re-seeds its random streams and so redraws the
+  same 1000 bootstrap resamples, one random number per alignment site each time. They are now
+  drawn once and replayed (about 20% of a quick tree run).
+- **Ultrafast bootstrap:** every candidate tree was formatted as text before checking whether
+  any bootstrap replicate keeps it (about 27% of a UFBoot run); now only kept trees are
+  formatted, and without a string stream per subtree. The whole bootstrap state was also
+  re-serialized into the checkpoint after every refined tree, although the file is written at
+  most once a minute (about 10%); now it is serialized only when it is written.
+- **Likelihood kernels:** tip data was assembled with scalar stores that the CPU cannot forward
+  to the vector loads that follow (7-11%); the OpenMP runtime was entered even with one thread
+  (2%); two pattern blocks now share their coefficient loads.
+- **Proving nothing changed:** we first rebuilt the official binary with its own toolchain
+  (clang 22, static) and confirmed it reproduces the release, then compared every output file
+  of 67 real runs and of 36 runs covering every option combination we use, and checked the
+  multi-threaded SH-aLRT path with a debug build that re-draws and compares every replayed
+  resample. No floating-point operation is reordered, fused or split.
+
+**[EXACT-SPEEDUPS.md](EXACT-SPEEDUPS.md) has the full story:** each change with the argument
+for why it cannot alter a result and its measured effect, how identity was verified, what we
+tried and dropped, and some observations about stock IQ-TREE.
+
 > [!WARNING]
 > **This is an unofficial fork of IQ-TREE. It is not affiliated with or endorsed by the
 > IQ-TREE authors.**
@@ -9,24 +61,6 @@
 >
 > For general use, install the official release. Please don't report problems with this
 > fork to the IQ-TREE developers. Open an issue here instead.
-
-This fork makes IQ-TREE 3.1.4 faster under one constraint: for the same input, options
-and seed, run with `-T 1`, **every output is byte-identical to the official 3.1.4
-binary**: the tree, UFBoot consensus and split supports, SH-aLRT values, fitted model
-parameters, distances, the `.iqtree` report and the log (apart from timings and the version
-banner). Only how fast the result arrives changes.
-
-Most of the gain comes from work stock IQ-TREE does and then throws away: it redraws the
-same 1000 SH-aLRT bootstrap resamples for every branch, formats every UFBoot candidate tree
-as a string before checking whether any replicate keeps it, and re-serializes all 1000
-UFBoot trees into the checkpoint after every refined tree although the file is written at
-most once a minute. The rest is in the likelihood kernels (tip data built with scalar stores
-the CPU cannot forward to vector loads, OpenMP runtime calls at one thread) and is likewise
-exact: no floating-point operation is reordered, fused or split.
-
-**[`EXACT-SPEEDUPS.md`](EXACT-SPEEDUPS.md) is the full write-up**: what each change does,
-why it cannot change a result, how that was verified, the measurements, what was tried and
-dropped, and some observations about stock IQ-TREE.
 
 ## Results
 
