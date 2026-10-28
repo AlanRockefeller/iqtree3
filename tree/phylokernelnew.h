@@ -37,6 +37,66 @@
     @param[out] X sum of elements of A
 */
 #ifndef KERNEL_FIX_STATES
+namespace {
+
+/**
+    Interleave the tip partial likelihoods of W patterns, one vector lane each:
+    vec[i*W + x] = tips[x][i] for i < len. Only copies values. The kernels used to do
+    this one double at a time, so every vector they then loaded from vec had been
+    written by W separate stores, which the CPU cannot forward to a vector load.
+    Kept file-local: this header is compiled once per instruction set.
+*/
+template <size_t W>
+struct TipLhInterleave {
+    static inline void run(double *vec, const double *const *tips, size_t len) {
+        for (size_t x = 0; x < W; x++) {
+            double *v = vec + x;
+            const double *t = tips[x];
+            for (size_t i = 0; i < len; i++, v += W)
+                *v = t[i];
+        }
+    }
+};
+
+#if defined(__AVX__) && !defined(__ARM_NEON)
+/** four patterns: a 4x4 transpose per four values */
+template <>
+struct TipLhInterleave<4> {
+    static inline void run(double *vec, const double *const *tips, size_t len) {
+        if (len % 4 != 0) {
+            for (size_t x = 0; x < 4; x++) {
+                double *v = vec + x;
+                const double *t = tips[x];
+                for (size_t i = 0; i < len; i++, v += 4)
+                    *v = t[i];
+            }
+            return;
+        }
+        for (size_t i = 0; i < len; i += 4) {
+            __m256d r0 = _mm256_loadu_pd(tips[0] + i); // a0 a1 a2 a3
+            __m256d r1 = _mm256_loadu_pd(tips[1] + i); // b0 b1 b2 b3
+            __m256d r2 = _mm256_loadu_pd(tips[2] + i); // c0 c1 c2 c3
+            __m256d r3 = _mm256_loadu_pd(tips[3] + i); // d0 d1 d2 d3
+            __m256d u0 = _mm256_unpacklo_pd(r0, r1);   // a0 b0 a2 b2
+            __m256d u1 = _mm256_unpackhi_pd(r0, r1);   // a1 b1 a3 b3
+            __m256d u2 = _mm256_unpacklo_pd(r2, r3);   // c0 d0 c2 d2
+            __m256d u3 = _mm256_unpackhi_pd(r2, r3);   // c1 d1 c3 d3
+            _mm256_storeu_pd(vec + 4*i,      _mm256_permute2f128_pd(u0, u2, 0x20)); // a0 b0 c0 d0
+            _mm256_storeu_pd(vec + 4*i + 4,  _mm256_permute2f128_pd(u1, u3, 0x20)); // a1 b1 c1 d1
+            _mm256_storeu_pd(vec + 4*i + 8,  _mm256_permute2f128_pd(u0, u2, 0x31)); // a2 b2 c2 d2
+            _mm256_storeu_pd(vec + 4*i + 12, _mm256_permute2f128_pd(u1, u3, 0x31)); // a3 b3 c3 d3
+        }
+    }
+};
+#endif
+
+template <class VectorClass>
+inline void interleaveTipLh(double *vec, const double *const *tips, size_t len) {
+    TipLhInterleave<sizeof(VectorClass) / sizeof(double)>::run(vec, tips, len);
+}
+
+} // namespace
+
 template <class VectorClass, const bool append>
 inline void sumVec(VectorClass *A, VectorClass &X, size_t N)
 {
@@ -1141,6 +1201,29 @@ inline void computeBounds(int threads, int packets, size_t elements, vector<size
             outError("Too many threads may slow down analysis [-nt option]. Reduce threads or use -nt AUTO to automatically determine it");
     }
 }
+
+// A single-threaded tree has one packet. Its two bounds are known without
+// constructing a vector (this is called at every branch/Newton iteration).
+// Keep the existing partitioning algorithm for all other configurations.
+template<class VectorClass>
+class PatternBounds {
+    size_t single[2];
+    vector<size_t> multiple;
+    bool is_single;
+public:
+    PatternBounds(int threads, int packets, size_t elements)
+        : is_single(threads == 1 && packets == 1) {
+        if (is_single) {
+            single[0] = 0;
+            single[1] = roundUpToMultiple(elements, VectorClass::size());
+        } else {
+            computeBounds<VectorClass>(threads, packets, elements, multiple);
+        }
+    }
+    size_t operator[](size_t index) const {
+        return is_single ? single[index] : multiple[index];
+    }
+};
 #endif
 
 #ifdef KERNEL_FIX_STATES
@@ -1242,13 +1325,11 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
         
         if (!Params::getInstance().buffer_mem_save) {
 #ifdef _OPENMP
-#pragma omp parallel if (num_info >= 3) num_threads(num_threads)
+        if (num_info >= 3 && num_threads > 1) {
+#pragma omp parallel num_threads(num_threads)
         {
             VectorClass *buffer_tmp = (VectorClass*)buffer + aln->num_states*omp_get_thread_num();
 #pragma omp for schedule(static)
-#else
-            VectorClass *buffer_tmp = (VectorClass*)buffer;
-#endif
             for (int i = 0; i < num_info; i++) {
             #ifdef KERNEL_FIX_STATES
                 computePartialInfo<VectorClass, nstates>(traversal_info[i], buffer_tmp);
@@ -1256,21 +1337,39 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
                 computePartialInfo<VectorClass>(traversal_info[i], buffer_tmp);
             #endif
             }
-#ifdef _OPENMP
         }
+        } else
 #endif
+        {
+            // one thread (the team of a serialized region is thread 0): no OpenMP runtime
+            VectorClass *buffer_tmp = (VectorClass*)buffer;
+            for (int i = 0; i < num_info; i++) {
+            #ifdef KERNEL_FIX_STATES
+                computePartialInfo<VectorClass, nstates>(traversal_info[i], buffer_tmp);
+            #else
+                computePartialInfo<VectorClass>(traversal_info[i], buffer_tmp);
+            #endif
+            }
+        }
         }
     }
 
     if (compute_partial_lh) {
-        vector<size_t> limits;
         size_t orig_nptn = roundUpToMultiple(aln->size(), VectorClass::size());
         size_t nptn      = roundUpToMultiple(orig_nptn+model_factory->unobserved_ptns.size(),VectorClass::size());
-        computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+        PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
         #ifdef _OPENMP
+        if (num_threads > 1) {
         #pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+        for (int packet_id = 0; packet_id < num_packets; ++packet_id) {
+            for (auto it = traversal_info.begin(); it != traversal_info.end(); it++) {
+                computePartialLikelihood(*it, limits[packet_id], limits[packet_id+1], packet_id);
+            }
+        }
+        } else
         #endif
+        // one thread: the same packets in the same order, without the OpenMP runtime
         for (int packet_id = 0; packet_id < num_packets; ++packet_id) {
             for (auto it = traversal_info.begin(); it != traversal_info.end(); it++) {
                 computePartialLikelihood(*it, limits[packet_id], limits[packet_id+1], packet_id);
@@ -1648,6 +1747,17 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
         auto rightStateRow = this->getConvertedSequenceByNumber(right->node->id);
         auto unknown = aln->STATE_UNKNOWN;
 
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+        // Experimental: a cherry's output depends only on its two tip states.
+        // Cache the 25 canonical/unknown DNA pairs within this call; the cached
+        // values come from the original SIMD operations, preserving every bit.
+        // Ambiguous pairs and other model/size configurations use the old path.
+        const bool cherry_cache_enabled = nstates == 4 && !SITE_MODEL &&
+            unknown == 18 && ncat_mix <= 8 && ptn_upper - ptn_lower >= 128;
+        double cherry_cache[25*32];
+        bool cherry_valid[25] = {};
+#endif
+
         for (size_t ptn = ptn_lower; ptn < ptn_upper; ptn+=VectorClass::size()) {
             VectorClass *partial_lh = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
 
@@ -1685,6 +1795,11 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
             } else {
                 VectorClass *vleft  = (VectorClass*)vec_left;
                 VectorClass *vright = (VectorClass*)vec_right;
+                const double *tips_left[VectorClass::size()], *tips_right[VectorClass::size()];
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                size_t cherry_keys[VectorClass::size()];
+                bool cherry_hit = cherry_cache_enabled;
+#endif
                 // load data for tip
                 for (size_t x = 0; x < VectorClass::size(); x++) {
                     int leftState;
@@ -1710,17 +1825,32 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                         leftState  = unknown;
                         rightState = unknown;
                     }
-                    const double* tip_left  = partial_lh_left  + block*leftState;
-                    const double* tip_right = partial_lh_right + block*rightState;
-                    double* this_vec_left = vec_left+x;
-                    double* this_vec_right = vec_right+x;
-                    for (size_t i = 0; i < block; i++) {
-                        *this_vec_left = tip_left[i];
-                        *this_vec_right = tip_right[i];
-                        this_vec_left += VectorClass::size();
-                        this_vec_right += VectorClass::size();
+                    tips_left[x]  = partial_lh_left  + block*leftState;
+                    tips_right[x] = partial_lh_right + block*rightState;
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                    if (cherry_cache_enabled) {
+                        size_t l = leftState < 4 ? leftState : (leftState == unknown ? 4 : 25);
+                        size_t r = rightState < 4 ? rightState : (rightState == unknown ? 4 : 25);
+                        size_t key = l < 5 && r < 5 ? l*5+r : 25;
+                        cherry_keys[x] = key;
+                        if (key == 25 || !cherry_valid[key])
+                            cherry_hit = false;
                     }
+#endif
                 }
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+#ifndef IQTREE_DIKARYA_CHERRY_CACHE_CHECK
+                if (cherry_hit) {
+                    const double *cached[VectorClass::size()];
+                    for (size_t x = 0; x < VectorClass::size(); x++)
+                        cached[x] = cherry_cache + cherry_keys[x]*block;
+                    interleaveTipLh<VectorClass>((double*)partial_lh, cached, block);
+                    continue;
+                }
+#endif
+#endif
+                interleaveTipLh<VectorClass>(vec_left, tips_left, block);
+                interleaveTipLh<VectorClass>(vec_right, tips_right, block);
 
 
                 for (size_t c = 0; c < ncat_mix; c++) {
@@ -1742,6 +1872,28 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                     vright += nstates;
                     partial_lh += nstates;
                 } // FOR category
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                if (cherry_cache_enabled) {
+                    const double *output = dad_branch->partial_lh + ptn*block;
+                    for (size_t x = 0; x < VectorClass::size(); x++) {
+                        const size_t key = cherry_keys[x];
+                        if (key == 25)
+                            continue;
+#ifdef IQTREE_DIKARYA_CHERRY_CACHE_CHECK
+                        if (cherry_valid[key]) {
+                            for (size_t i = 0; i < block; i++)
+                                if (memcmp(&cherry_cache[key*block+i], &output[i*VectorClass::size()+x], sizeof(double)) != 0)
+                                    outError("Cherry cache differs from the original SIMD kernel");
+                        } else
+#endif
+                        if (!cherry_valid[key]) {
+                            for (size_t i = 0; i < block; i++)
+                                cherry_cache[key*block+i] = output[i*VectorClass::size()+x];
+                            cherry_valid[key] = true;
+                        }
+                    }
+                }
+#endif
             } // IF SITE_MODEL
 		} // FOR LOOP
 
@@ -1761,6 +1913,13 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
         double *vec_left = buffer_partial_lh_ptr + thread_buf_size * packet_id;
         VectorClass *partial_lh_tmp = SITE_MODEL ? (VectorClass*)vec_left+2*nstates : (VectorClass*)vec_left+block;
+#if defined(IQTREE_DIKARYA_LOCAL_TIP_PARTIAL) && defined(KERNEL_FIX_STATES)
+        // A local DNA intermediate cannot alias the input/matrix/output buffers,
+        // letting the compiler retain the unchanged four SIMD values in registers.
+        VectorClass local_tip_partial[4];
+        if (!SITE_MODEL && nstates == 4)
+            partial_lh_tmp = local_tip_partial;
+#endif
 
         auto leftStateRow = this->getConvertedSequenceByNumber(left->node->id);
         auto unknown = aln->STATE_UNKNOWN;
@@ -1818,6 +1977,7 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
             } else {
                 VectorClass *vleft = (VectorClass*)vec_left;
+                const double *tips[VectorClass::size()];
                 // load data for tip
                 for (size_t x = 0; x < VectorClass::size(); x++) {
                     int state;
@@ -1834,13 +1994,9 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                     } else {
                         state = unknown;
                     }
-                    const double *tip = partial_lh_left + block*state;
-                    double *this_vec_left = vec_left+x;
-                    for (size_t i = 0; i < block; i++) {
-                        *this_vec_left = tip[i];
-                        this_vec_left += VectorClass::size();
-                    }
+                    tips[x] = partial_lh_left + block*state;
                 }
+                interleaveTipLh<VectorClass>(vec_left, tips, block);
 
                 double *eright_ptr = eright;
                 for (size_t c = 0; c < ncat_mix; c++) {
@@ -1911,7 +2067,69 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
         VectorClass *partial_lh_tmp
             = (VectorClass*)(buffer_partial_lh_ptr + thread_buf_size * packet_id);
-		for (size_t ptn = ptn_lower; ptn < ptn_upper; ptn+=VectorClass::size()) {
+        size_t ptn = ptn_lower;
+#ifdef KERNEL_FIX_STATES
+        if (!SAFE_NUMERIC && !SITE_MODEL && nstates == 4) {
+            // Two pattern blocks per pass: each block makes exactly the calls of the
+            // single-block loop below, on the same operands, but the per-category
+            // eigenvector coefficients are loaded once for both. The blocks write
+            // disjoint patterns, so the order between them does not matter.
+            for (; ptn + 2*VectorClass::size() <= ptn_upper; ptn += 2*VectorClass::size()) {
+                const size_t ptn_b = ptn + VectorClass::size();
+                VectorClass *partial_lh_a = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
+                VectorClass *partial_lh_b = (VectorClass*)(dad_branch->partial_lh + (ptn_b*block));
+                VectorClass *left_a = (VectorClass*)(left->partial_lh + (ptn*block));
+                VectorClass *left_b = (VectorClass*)(left->partial_lh + (ptn_b*block));
+                VectorClass *right_a = (VectorClass*)(right->partial_lh + (ptn*block));
+                VectorClass *right_b = (VectorClass*)(right->partial_lh + (ptn_b*block));
+                VectorClass lh_max_a = 0.0, lh_max_b = 0.0;
+                for (size_t i = 0; i < 2*VectorClass::size(); i++)
+                    dad_branch->scale_num[ptn+i] = left->scale_num[ptn+i] + right->scale_num[ptn+i];
+                double *eleft_ptr = eleft;
+                double *eright_ptr = eright;
+                for (size_t c = 0; c < ncat_mix; c++) {
+                    double *inv_evec_ptr = inv_evec + mix_addr_malign[c];
+                    VectorClass tmp_a[nstates], tmp_b[nstates], out_a[nstates], out_b[nstates];
+                    for (size_t x = 0; x < nstates; x++) {
+                        dotProductDualVec<VectorClass, double, nstates, FMA>(eleft_ptr, left_a, eright_ptr, right_a, tmp_a[x]);
+                        dotProductDualVec<VectorClass, double, nstates, FMA>(eleft_ptr, left_b, eright_ptr, right_b, tmp_b[x]);
+                        eleft_ptr += nstates;
+                        eright_ptr += nstates;
+                    }
+                    productVecMat<VectorClass, double, nstates, FMA>(tmp_a, inv_evec_ptr, out_a, lh_max_a);
+                    productVecMat<VectorClass, double, nstates, FMA>(tmp_b, inv_evec_ptr, out_b, lh_max_b);
+                    for (size_t x = 0; x < nstates; x++) {
+                        partial_lh_a[x] = out_a[x];
+                        partial_lh_b[x] = out_b[x];
+                    }
+                    left_a += nstates;
+                    left_b += nstates;
+                    right_a += nstates;
+                    right_b += nstates;
+                    partial_lh_a += nstates;
+                    partial_lh_b += nstates;
+                }
+                // the single-block loop's scaling check, for each block
+                for (size_t b = 0; b < 2; b++) {
+                    const size_t ptn_x = b ? ptn_b : ptn;
+                    VectorClass lh_max = b ? lh_max_b : lh_max_a;
+                    auto underflown = (lh_max < SCALING_THRESHOLD) & (VectorClass().load_a(&ptn_invar[ptn_x]) == 0.0);
+                    if (horizontal_or(underflown)) { // at least one site has numerical underflown
+                        for (size_t x = 0; x < VectorClass::size(); x++)
+                        if (underflown[x]) {
+                            double *partial_lh = dad_branch->partial_lh + (ptn_x*block + x);
+                            // now do the likelihood scaling
+                            for (size_t i = 0; i < block; i++) {
+                                partial_lh[i*VectorClass::size()] = ldexp(partial_lh[i*VectorClass::size()], SCALING_THRESHOLD_EXP);
+                            }
+                            dad_branch->scale_num[ptn_x+x] += 1;
+                        }
+                    }
+                }
+            }
+        }
+#endif
+		for (; ptn < ptn_upper; ptn+=VectorClass::size()) {
 			VectorClass *partial_lh = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
 			VectorClass *partial_lh_left = (VectorClass*)(left->partial_lh + (ptn*block));
 			VectorClass *partial_lh_right = (VectorClass*)(right->partial_lh + (ptn*block));
@@ -2105,6 +2323,7 @@ void PhyloTree::computeLikelihoodBufferGenericSIMD(PhyloNeighbor *dad_branch, Ph
             VectorClass *theta = (VectorClass*)(theta_all + offset);
             //load tip vector
             if (!SITE_MODEL) {
+                const double *tips[VectorClass::size()];
                 for (size_t i = 0; i < VectorClass::size(); i++) {
                     int state;
                     if (ptn+i < orig_nptn) {
@@ -2120,13 +2339,9 @@ void PhyloTree::computeLikelihoodBufferGenericSIMD(PhyloNeighbor *dad_branch, Ph
                     } else {
                         state = unknown;
                     }
-                    const double *this_tip_partial_lh = tip_partial_lh + tip_block*state;
-                    double *this_vec_tip = vec_tip+i;
-                    for (size_t c = 0; c < tip_block; c++) {
-                        *this_vec_tip = this_tip_partial_lh[c];
-                        this_vec_tip += VectorClass::size();
-                    }
+                    tips[i] = tip_partial_lh + tip_block*state;
                 }
+                interleaveTipLh<VectorClass>(vec_tip, tips, tip_block);
             }
             VectorClass *lh_tip;
             if (SITE_MODEL) {
@@ -2301,8 +2516,7 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     ASSERT(eval);
 
     double *buffer_partial_lh_ptr = buffer_partial_lh;
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     double *val0 = nullptr;
     double *val1 = nullptr;
@@ -2378,10 +2592,11 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     }
 
     double all_lh(0.0), all_df(0.0), all_ddf(0.0), all_prob_const(0.0), all_df_const(0.0), all_ddf_const(0.0);
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) reduction(+:all_lh,all_df,all_ddf,all_prob_const,all_df_const,all_ddf_const)
-#endif
-    for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+    double *const pattern_derivatives = G_matrix;
+    // One packet. The sums are parameters so that inside the OpenMP loop they bind to the
+    // thread's reduction copies.
+    auto derv_packet = [=, &limits, &cat_rate, &cat_prop, &mix_addr_nstates_malign, &mix_addr_malign, &cat_id](int packet_id, double &all_lh, double &all_df, double &all_ddf,
+                           double &all_prob_const, double &all_df_const, double &all_ddf_const) {
         size_t ptn_lower = limits[packet_id];
         size_t ptn_upper = limits[packet_id+1];
 
@@ -2529,7 +2744,8 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
                     ddf_ptn *= inv_lh_ptn;
                     my_ddf += nmul_add(df_ptn, df_ptn, ddf_ptn) * freq;
                     // TODO: need to do further optimization with store_a in vector class
-                    df_ptn.store_a(&G_matrix[g_index + ptn]);
+                    if (pattern_derivatives)
+                        df_ptn.store_a(&pattern_derivatives[g_index + ptn]);
                 } else {
                     // ascertainment bias correction
                     if (ptn+VectorClass::size() > nptn) {
@@ -2577,7 +2793,20 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
             }
 
         } // else isMixlen()
-    } // FOR packet
+    }; // packet
+#ifdef _OPENMP
+    if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) reduction(+:all_lh,all_df,all_ddf,all_prob_const,all_df_const,all_ddf_const)
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            derv_packet(packet_id, all_lh, all_df, all_ddf, all_prob_const, all_df_const, all_ddf_const);
+    } else
+#endif
+    // This runs for every Newton step of every branch. A one-thread team would run the
+    // packets in order into reduction copies that start at +0.0 (so never end at -0.0) and
+    // then add them to these +0.0 variables: the same values as summing here directly,
+    // without entering the OpenMP runtime.
+    for (int packet_id = 0; packet_id < num_packets; packet_id++)
+        derv_packet(packet_id, all_lh, all_df, all_ddf, all_prob_const, all_df_const, all_ddf_const);
     gradient_vector[branch_id] = all_df;
     hessian_diagonal[branch_id] = all_ddf;
 
@@ -2780,16 +3009,22 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
     double all_tree_lh(0.0);
     double all_prob_const(0.0);
 
-    double* all_lh = new double[num_packets];
-    memset(all_lh, 0, num_packets * sizeof(double));
+    double single_lh = 0.0, single_prob = 0.0;
+    double* all_lh = &single_lh;
+    if (num_packets != 1) {
+        all_lh = new double[num_packets];
+        memset(all_lh, 0, num_packets * sizeof(double));
+    }
     double* all_prob = nullptr;
     if (ASC_Lewis) {
-        all_prob = new double[num_packets];
-        memset(all_prob, 0, num_packets * sizeof(double));
+        all_prob = &single_prob;
+        if (num_packets != 1) {
+            all_prob = new double[num_packets];
+            memset(all_prob, 0, num_packets * sizeof(double));
+        }
     }
 
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     if (dad->isLeaf()) {
         // cout << "PhyloTree::computeLikelihoodBrachGenericSIMD dad->isLeaf()" << endl << flush;
@@ -2846,10 +3081,9 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
         // cout << "num_packets = " << num_packets << endl;
         // cout << "num_threads = " << num_threads << endl;
         // cout << "nptn = " << nptn << endl;
-#ifdef _OPENMP
-#pragma omp parallel for  schedule(dynamic,1) num_threads(num_threads) // reduction(+:all_tree_lh,all_prob_const)
-#endif
-        for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+        auto tip_branch_packet = [=, &limits, &cat_length, &cat_prop,
+                                    &mix_addr_nstates, &mix_addr_nstates_malign,
+                                    &mix_addr, &mix_addr_malign](int packet_id) {
             // cout << "packet_id = " << packet_id << " ptn_lower = " << limits[packet_id] << " ptn_upper = " << limits[packet_id+1] << endl;
             VectorClass vc_tree_lh(0.0);
             VectorClass vc_prob_const(0.0);
@@ -2890,6 +3124,7 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
                     }
                 } else { // normal model
                     //load tip vector
+                    const double *tips[VectorClass::size()];
                     for (size_t i = 0; i < VectorClass::size(); i++) {
                         int state;
                         if (ptn+i < orig_nptn) {
@@ -2905,13 +3140,9 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
                         } else {
                             state = aln->STATE_UNKNOWN;
                         }
-                        const double *lh_tip = partial_lh_node + block*state;
-                        double *this_vec_tip = vec_tip+i;
-                        for (size_t c = 0; c < block; c++) {
-                            *this_vec_tip = lh_tip[c];
-                            this_vec_tip += VectorClass::size();
-                        }
+                        tips[i] = partial_lh_node + block*state;
                     }
+                    interleaveTipLh<VectorClass>(vec_tip, tips, block);
                     // compute likelihood per category
                     for (size_t c = 0; c < ncat_mix; c++) {
     #ifdef KERNEL_FIX_STATES
@@ -3009,14 +3240,22 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
             if (ASC_Lewis)
                 all_prob[packet_id] = horizontal_add(vc_prob_const);
 
-        } // FOR packet
+        }; // one packet; output slots are disjoint
+#ifdef _OPENMP
+        if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+            for (int packet_id = 0; packet_id < num_packets; packet_id++)
+                tip_branch_packet(packet_id);
+        } else
+#endif
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            tip_branch_packet(packet_id);
     } else {
         //ASSERT(0 && "Don't compute tree log-likelihood from internal branch!");
     	//-------- both dad and node are internal nodes -----------/
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) // reduction(+:all_tree_lh,all_prob_const)
-#endif
-        for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+        auto internal_branch_packet = [=, &limits, &cat_length, &cat_prop,
+                                    &mix_addr_nstates, &mix_addr_nstates_malign,
+                                    &mix_addr, &mix_addr_malign](int packet_id) {
             size_t ptn_lower = limits[packet_id];
             size_t ptn_upper = limits[packet_id+1];
 
@@ -3152,18 +3391,29 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
             if (ASC_Lewis)
                 all_prob[packet_id] = horizontal_add(vc_prob_const);
 
-        } // FOR thread
+        }; // one packet; output slots are disjoint
+#ifdef _OPENMP
+        if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+            for (int packet_id = 0; packet_id < num_packets; packet_id++)
+                internal_branch_packet(packet_id);
+        } else
+#endif
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            internal_branch_packet(packet_id);
     } // else
 
     // compute the sum according the same order even using openmp
     for (int k = 0; k < num_packets; k++)
         all_tree_lh += all_lh[k];
-    delete[] all_lh;
+    if (num_packets != 1)
+        delete[] all_lh;
 
     if (all_prob != nullptr) {
         for (int k = 0; k < num_packets; k++)
             all_prob_const += all_prob[k];
-        delete[] all_prob;
+        if (num_packets != 1)
+            delete[] all_prob;
     }
 
     tree_lh += all_tree_lh;
@@ -3370,19 +3620,11 @@ double PhyloTree::computeLikelihoodFromBufferGenericSIMD()
     }
 
     double all_tree_lh(0.0), all_prob_const(0.0);
-    int nsize = nptn / VectorClass::size() + 1;
-    double* all_lh = new double[nsize];
-    memset(all_lh, 0, nsize * sizeof(double));
-    double* all_prob = nullptr;
-    if (ASC_Lewis) {
-        all_prob = new double[nsize];
-        memset(all_prob, 0, nsize * sizeof(double));
-    }
-
-    #ifdef _OPENMP
-    #pragma omp parallel for num_threads(num_threads)
-    #endif
-    for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+    struct PatternContribution {
+        double lh;
+        double prob;
+    };
+    auto buffer_pattern = [=, &cat_length, &cat_prop](size_t ptn) {
         VectorClass lh_ptn(0.0);
         VectorClass *theta = (VectorClass*)(theta_all + (ptn*block));
         if (SITE_MODEL) {
@@ -3429,21 +3671,53 @@ double PhyloTree::computeLikelihoodFromBufferGenericSIMD()
                 vc_prob_const += lh_ptn;
             }
         }
-        int k = ptn / VectorClass::size();
-        all_lh[k] = horizontal_add(vc_tree_lh);
-        if (ASC_Lewis)
-            all_prob[k] = horizontal_add(vc_prob_const);
-    }
-    
-    // compute the sum according the same order even using openmp
-    for (int k = 0; k < nsize; k++)
-        all_tree_lh += all_lh[k];
-    delete[] all_lh;
-
-    if (all_prob != nullptr) {
+        return PatternContribution{horizontal_add(vc_tree_lh),
+            ASC_Lewis ? horizontal_add(vc_prob_const) : 0.0};
+    };
+    if (num_threads > 1) {
+        int nsize = nptn / VectorClass::size() + 1;
+        double* all_lh = new double[nsize];
+        memset(all_lh, 0, nsize * sizeof(double));
+        double* all_prob = nullptr;
+        if (ASC_Lewis) {
+            all_prob = new double[nsize];
+            memset(all_prob, 0, nsize * sizeof(double));
+        }
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(num_threads)
+#endif
+        for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+            PatternContribution contribution = buffer_pattern(ptn);
+            int k = ptn / VectorClass::size();
+            all_lh[k] = contribution.lh;
+            if (ASC_Lewis)
+                all_prob[k] = contribution.prob;
+        }
+        // Keep the parallel path's ordered reduction, including the zero tail.
         for (int k = 0; k < nsize; k++)
-            all_prob_const += all_prob[k];
-        delete[] all_prob;
+            all_tree_lh += all_lh[k];
+        delete[] all_lh;
+        if (all_prob != nullptr) {
+            for (int k = 0; k < nsize; k++)
+                all_prob_const += all_prob[k];
+            delete[] all_prob;
+        }
+    } else {
+        // The former arrays were summed in increasing pattern-block order.
+        // Fold the same double contributions in that order without storing them.
+        for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+            PatternContribution contribution = buffer_pattern(ptn);
+            all_tree_lh += contribution.lh;
+            if (ASC_Lewis)
+                all_prob_const += contribution.prob;
+        }
+        // nsize was floor(nptn/vector_size)+1. A divisible pattern count left
+        // one extra initialized +0.0 slot, whose final addition is retained.
+        if (nptn % VectorClass::size() == 0) {
+            all_tree_lh += 0.0;
+            if (ASC_Lewis)
+                all_prob_const += 0.0;
+        }
     }
     
     double tree_lh = all_tree_lh;
@@ -3564,8 +3838,7 @@ void PhyloTree::computeLikelihoodDervMixlenGenericSIMD(PhyloNeighbor *dad_branch
     ASSERT(eval);
 
     double *buffer_partial_lh_ptr = buffer_partial_lh;
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     double *val0 = nullptr;
     double *val1 = nullptr;

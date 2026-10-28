@@ -1,0 +1,71 @@
+{
+  "description": "Additional supported command shapes on the real 5lhf alignment (39 taxa). Input and seed match original job; model/support options intentionally vary for correctness coverage, so original stored trees are not expected outputs.",
+  "cases": [
+    {
+      "id": "5lhf-k2p-ufboot",
+      "job": "5lhf",
+      "group": "advanced",
+      "alignment": "alignment/alignment_trimmed.fasta",
+      "source_sha256": "4ea2e3fa0bda1f3bfed8da205ca95d251815f2ed6255c88e8dd638e4ae64fc61",
+      "input_sha256": "92520353deb7086968bf1e3878eadfedd59a2ef54f10e8d3330e0d094dc95c6f",
+      "input_bytes": 27144,
+      "seed": 2052622634,
+      "model": "K2P",
+      "options": [
+        "-B",
+        "1000",
+        "--bnni",
+        "--alrt",
+        "1000"
+      ],
+      "taxa": 39,
+      "sites": 673,
+      "patterns": 279,
+      "collapse_identical": false,
+      "stored_tree_comparable": false
+    },
+    {
+      "id": "5lhf-hky-ufboot-no-alrt",
+      "job": "5lhf",
+      "group": "advanced",
+      "alignment": "alignment/alignment_trimmed.fasta",
+      "source_sha256": "4ea2e3fa0bda1f3bfed8da205ca95d251815f2ed6255c88e8dd638e4ae64fc61",
+      "input_sha256": "92520353deb7086968bf1e3878eadfedd59a2ef54f10e8d3330e0d094dc95c6f",
+      "input_bytes": 27144,
+      "seed": 2052622634,
+      "model": "HKY+G",
+      "options": [
+        "-B",
+        "1000",
+        "--bnni"
+      ],
+      "taxa": 39,
+      "sites": 673,
+      "patterns": 279,
+      "collapse_identical": false,
+      "stored_tree_comparable": false
+    },
+    {
+      "id": "5lhf-gtr-r6",
+      "job": "5lhf",
+      "group": "advanced",
+      "alignment": "alignment/alignment_trimmed.fasta",
+      "source_sha256": "4ea2e3fa0bda1f3bfed8da205ca95d251815f2ed6255c88e8dd638e4ae64fc61",
+      "input_sha256": "92520353deb7086968bf1e3878eadfedd59a2ef54f10e8d3330e0d094dc95c6f",
+      "input_bytes": 27144,
+      "seed": 2052622634,
+      "model": "GTR+F+R6",
+      "options": [
+        "-n",
+        "3",
+        "--alrt",
+        "1000"
+      ],
+      "taxa": 39,
+      "sites": 673,
+      "patterns": 279,
+      "collapse_identical": false,
+      "stored_tree_comparable": false
+    }
+  ]
+}

@@ -2648,8 +2648,12 @@ double IQTree::doTreeSearch() {
 
         // print UFBoot trees every 10 iterations
 
-        saveCheckpoint();
-        checkpoint->dump();
+        // as in refineBootTrees(): only serialize the state when the dump will write it;
+        // runTreeReconstruction() saves the final state after the search
+        if (checkpoint->isDumpDue()) {
+            saveCheckpoint();
+            checkpoint->dump();
+        }
 
         if (bestcandidate_changed) {
             printBestCandidateTree();
@@ -3043,13 +3047,16 @@ void IQTree::refineBootTrees() {
             cout << "UFBoot tree " << sample+1 << ": " << boot_logl[sample] << " -> " << boot_tree->getCurScore() << endl;
         }
 
-        stringstream ostr;
+        int brtype = WT_TAXON_ID | WT_SORT_TAXA;
         if (params->print_ufboot_trees == 2) {
-            boot_tree->printTree(ostr, WT_TAXON_ID | WT_SORT_TAXA | WT_BR_LEN | WT_BR_LEN_SHORT);
-        } else {
-            boot_tree->printTree(ostr, WT_TAXON_ID | WT_SORT_TAXA);
+            brtype |= WT_BR_LEN | WT_BR_LEN_SHORT;
         }
-        boot_trees[sample] = ostr.str();
+        boot_trees[sample].clear();
+        if (!boot_tree->printSortedTreeString(boot_trees[sample], brtype)) {
+            stringstream ostr;
+            boot_tree->printTree(ostr, brtype);
+            boot_trees[sample] = ostr.str();
+        }
         boot_logl[sample] = boot_tree->curScore;
 
 
@@ -3067,13 +3074,19 @@ void IQTree::refineBootTrees() {
             cout << sample+1 << " samples done" << endl;
         }
 
-        saveCheckpoint();
+        // Saving serializes every UFBoot tree, which costs about as much as refining one,
+        // and nothing reads the in-memory checkpoint before it is dumped (the full state is
+        // saved again after this loop), so only refresh it when the dump will write it.
+        bool dump_due = checkpoint->isDumpDue();
+        if (dump_due)
+            saveCheckpoint();
         checkpoint->startStruct("UFBoot");
         refined_samples = sample;
         CKP_SAVE(refined_samples);
         checkpoint->endStruct();
 
-        checkpoint->dump();
+        if (dump_due)
+            checkpoint->dump();
 
 	}
     
@@ -3879,15 +3892,11 @@ void IQTree::saveCurrentTree(double cur_logl) {
 //        int ptn;
 //        int updated = 0;
 //        int nsamples = boot_samples.size();
-        ostringstream ostr;
-        string tree_str;
         setRootNode(params->root);
-        if (params->print_ufboot_trees == 2) {
-            printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA + WT_BR_LEN + WT_BR_LEN_SHORT);
-        } else {
-            printTree(ostr, WT_TAXON_ID + WT_SORT_TAXA);
-        }
-        tree_str = ostr.str();
+        // Printing the tree is costly (every subtree is sorted, and with -bnni every branch
+        // length is formatted) and most candidate trees win no replicate, so it is printed
+        // after the loop, only if some replicate took it. The loop does not change the tree.
+        vector<char> took_tree(sample_end - sample_start, 0);
 
     #ifdef _OPENMP
         int rand_seed = random_int(1000);
@@ -3923,13 +3932,28 @@ void IQTree::saveCurrentTree(double cur_logl) {
                 }
                 boot_logl[sample] = max(boot_logl[sample], rell);
                 boot_orig_logl[sample] = cur_logl;
-                boot_trees[sample] = tree_str;
+                took_tree[sample - sample_start] = 1;
             }
         }
     #ifdef _OPENMP
         finish_random(rstream);
         }
     #endif
+        if (find(took_tree.begin(), took_tree.end(), 1) != took_tree.end()) {
+            int brtype = WT_TAXON_ID + WT_SORT_TAXA;
+            if (params->print_ufboot_trees == 2) {
+                brtype += WT_BR_LEN + WT_BR_LEN_SHORT;
+            }
+            string tree_str;
+            if (!printSortedTreeString(tree_str, brtype)) {
+                ostringstream ostr;
+                printTree(ostr, brtype);
+                tree_str = ostr.str();
+            }
+            for (int sample = sample_start; sample < sample_end; sample++)
+                if (took_tree[sample - sample_start])
+                    boot_trees[sample] = tree_str;
+        }
     }
     if (Params::getInstance().print_tree_lh) {
         out_treelh << cur_logl;

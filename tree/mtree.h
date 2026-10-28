@@ -223,6 +223,18 @@ public:
      */
     virtual int printTree(ostream &out, int brtype, Node *node, Node *dad = nullptr);
 
+    /**
+            append to out exactly what printTree(out, brtype) writes into a new ostringstream,
+            without the per-subtree streams and iostream number formatting
+            @param brtype WT_SORT_TAXA plus any of WT_TAXON_ID, WT_BR_LEN, WT_BR_LEN_SHORT, WT_NEWLINE
+            @return false, appending nothing, for any other brtype or for a tree class that
+                prints differently; the caller then uses printTree()
+     */
+    virtual bool printSortedTreeString(string &out, int brtype);
+
+    /** recursive part of printSortedTreeString(), mirroring printTree(out, brtype, node, dad) */
+    int printSortedTreeString(string &out, int brtype, Node *node, Node *dad);
+
 
     /**
             print the sub-tree to the output file in newick format
