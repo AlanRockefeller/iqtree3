@@ -12,6 +12,7 @@
 #include "utils/tools.h"
 #include "alignment.h"
 #include "nclextra/myreader.h"
+#include <array>
 #include <numeric>
 #include <sstream>
 #include "model/rategamma.h"
@@ -1625,11 +1626,20 @@ SeqType Alignment::detectSequenceType(StrVector &sequences) {
     size_t num_alpha = 0;
     double detectStart = getRealTime();
     size_t sequenceCount = sequences.size();
-    std::unordered_set<char> proper_nucleotides = {'A', 'C', 'G', 'T', 'U'};
-    std::unordered_set<char> nucleotides = {'A', 'C', 'G', 'T', 'U', 'R', 'Y', 'W', 'S', 'M', 'K', 'B', 'H', 'D', 'V', 'N', 'X'};
-    std::unordered_set<char> proper_amino_acids = {'A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F', 'P', 'S',  'T', 'W', 'Y', 'V'};
-    std::unordered_set<char> binaries = {'0', '1'};
-//    std::unordered_set<char> gap_miss = {'?', '-', '.', '~'};
+    // A byte can belong to several alphabets. Preserve the independent counts
+    // without performing four hash-table lookups for every sequence character.
+    static const std::array<unsigned char, NUM_CHAR> alphabet_flags = [] {
+        std::array<unsigned char, NUM_CHAR> flags = {};
+        for (const char *p = "ACGTU"; *p; ++p)
+            flags[static_cast<unsigned char>(*p)] |= 1;
+        for (const char *p = "ACGTURYWSMKBHDVNX"; *p; ++p)
+            flags[static_cast<unsigned char>(*p)] |= 2;
+        for (const char *p = "ARNDCQEGHILKMFPSTWYV"; *p; ++p)
+            flags[static_cast<unsigned char>(*p)] |= 4;
+        flags[static_cast<unsigned char>('0')] |= 8;
+        flags[static_cast<unsigned char>('1')] |= 8;
+        return flags;
+    }();
     
 #ifdef _OPENMP
 #pragma omp parallel for reduction(+:num_proper_nuc, num_nuc, num_aa, num_bin, num_digit, num_alpha)
@@ -1638,17 +1648,11 @@ SeqType Alignment::detectSequenceType(StrVector &sequences) {
         auto start = sequences.at(seqNum).data();
         auto stop  = start + sequences.at(seqNum).size();
         for (auto i = start; i!=stop; ++i) {
-//            if (gap_miss.find(*i) != gap_miss.end()) {
-//                continue;
-//            }
-            if (proper_nucleotides.find(*i) != proper_nucleotides.end())
-                num_proper_nuc++;
-            if (nucleotides.find(*i) != nucleotides.end())
-                num_nuc++;
-            if (proper_amino_acids.find(*i) != proper_amino_acids.end())
-                num_aa++;
-            if (binaries.find(*i) != binaries.end())
-                num_bin++;
+            const unsigned char flags = alphabet_flags[static_cast<unsigned char>(*i)];
+            num_proper_nuc += flags & 1;
+            num_nuc += (flags >> 1) & 1;
+            num_aa += (flags >> 2) & 1;
+            num_bin += (flags >> 3) & 1;
             if (isdigit(*i))
                 num_digit++;
             if (isalpha(*i))
@@ -2234,8 +2238,9 @@ int Alignment::buildPattern(StrVector &sequences, char *sequence_type, int nseq,
     int num_error = 0;
     int num_gaps_only = 0;
     progress_display progress(nsite, "Constructing alignment", "examined", "site");
+    Pattern pat;
+    pat.resize(nseq);
     for (size_t site = 0; site < nsite; site += step) {
-        Pattern pat;
         for (size_t seq = 0; seq < nseq; ++seq) {
             StateType state = char_to_state[(int)(sequences[seq][site])];
             if (genetic_code) {
@@ -2260,7 +2265,7 @@ int Alignment::buildPattern(StrVector &sequences, char *sequence_type, int nseq,
                 }
                 num_error++;
             }
-            pat.push_back(state);
+            pat[seq] = state;
         }
         if (!num_error) {
             bool gaps_only;
@@ -4262,11 +4267,7 @@ void Alignment::createBootstrapAlignment(Alignment *aln, IntVector* pattern_freq
 void Alignment::createBootstrapAlignment(IntVector &pattern_freq, const char *spec) {
 	int nptn = getNPattern();
     pattern_freq.resize(nptn, 0);
-    int *internal_freq = new int [nptn];
-    createBootstrapAlignment(internal_freq, spec);
-    for (int i = 0; i < nptn; i++)
-    	pattern_freq[i] = internal_freq[i];
-    delete [] internal_freq;
+    createBootstrapAlignment(pattern_freq.data(), spec);
 }
 
 void Alignment::createBootstrapAlignment(int *pattern_freq, const char *spec, int *rstream) {
@@ -4295,10 +4296,8 @@ void Alignment::createBootstrapAlignment(int *pattern_freq, const char *spec, in
             IntVector sample;
             random_resampling(nsite, sample, rstream);
             for (size_t site = 0; site < nsite; site++) {
-                for (int rep = 0; rep < sample[site]; rep++) {
-                    int ptn_id = getPatternID(site);
-                    pattern_freq[ptn_id]++;
-                }
+                int ptn_id = getPatternID(site);
+                pattern_freq[ptn_id] += sample[site];
             }
         } else {
             // BQM 2015-12-27: use multinomial sampling for faster generation if #sites is much larger than #patterns

@@ -121,7 +121,7 @@ find_package(Backtrace)
 # The version number.
 set (iqtree_VERSION_MAJOR 3)
 set (iqtree_VERSION_MINOR 1)
-set (iqtree_VERSION_PATCH ".4-dikarya1")
+set (iqtree_VERSION_PATCH ".4-dikarya2")
 
 option(BUILD_SHARED_LIBS "Build Shared Libraries" OFF)
 
@@ -930,12 +930,36 @@ endif()
 
 add_library(kernelsse tree/phylokernelsse.cpp)
 
+# Reuse exact SIMD results for common DNA tip pairs. Kept optional so the
+# original kernel can be benchmarked and its results independently verified.
+option(DIKARYA_CHERRY_CACHE "Cache common DNA cherry partials" ON)
+option(DIKARYA_CHERRY_CACHE_CHECK "Verify cached DNA partials against SIMD" OFF)
+option(DIKARYA_LOCAL_TIP_PARTIAL "Keep four-state tip partial intermediates local" ON)
 if (NOT BINARY32 AND NOT IQTREE_FLAGS MATCHES "novx")
     add_library(kernelavx tree/phylotreeavx.cpp)
     add_library(kernelfma tree/phylokernelfma.cpp)
     if (IQTREE_FLAGS MATCHES "KNL")
         add_library(kernelavx512 tree/phylokernelavx512.cpp)
     endif()
+endif()
+
+if (DIKARYA_CHERRY_CACHE OR DIKARYA_CHERRY_CACHE_CHECK)
+    foreach(kernel kernelsse kernelavx kernelfma kernelavx512)
+        if (TARGET ${kernel})
+            target_compile_definitions(${kernel} PRIVATE IQTREE_DIKARYA_CHERRY_CACHE)
+            if (DIKARYA_CHERRY_CACHE_CHECK)
+                target_compile_definitions(${kernel} PRIVATE IQTREE_DIKARYA_CHERRY_CACHE_CHECK)
+            endif()
+        endif()
+    endforeach()
+endif()
+
+if (DIKARYA_LOCAL_TIP_PARTIAL)
+    foreach(kernel kernelsse kernelavx kernelfma kernelavx512)
+        if (TARGET ${kernel})
+            target_compile_definitions(${kernel} PRIVATE IQTREE_DIKARYA_LOCAL_TIP_PARTIAL)
+        endif()
+    endforeach()
 endif()
 
 add_subdirectory(main)

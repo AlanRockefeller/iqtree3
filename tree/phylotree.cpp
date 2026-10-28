@@ -921,8 +921,9 @@ void PhyloTree::initializeAllPartialLh() {
         gradient_vector = aligned_alloc<double>(branchNum);
     if(!hessian_diagonal)
         hessian_diagonal = aligned_alloc<double>(branchNum);
-    //todo: please check here for memory allocation
-    if(!G_matrix) {
+    // Per-pattern branch derivatives are only consumed by MCMCTree export.
+    // Ordinary inference needs the reduced derivatives, not this large matrix.
+    if (!G_matrix && params->dating_method == "mcmctree") {
         size_t g_matrix_size = branchNum * mem_size;
         G_matrix = aligned_alloc<double>(g_matrix_size);
     }

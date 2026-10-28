@@ -1201,6 +1201,29 @@ inline void computeBounds(int threads, int packets, size_t elements, vector<size
             outError("Too many threads may slow down analysis [-nt option]. Reduce threads or use -nt AUTO to automatically determine it");
     }
 }
+
+// A single-threaded tree has one packet. Its two bounds are known without
+// constructing a vector (this is called at every branch/Newton iteration).
+// Keep the existing partitioning algorithm for all other configurations.
+template<class VectorClass>
+class PatternBounds {
+    size_t single[2];
+    vector<size_t> multiple;
+    bool is_single;
+public:
+    PatternBounds(int threads, int packets, size_t elements)
+        : is_single(threads == 1 && packets == 1) {
+        if (is_single) {
+            single[0] = 0;
+            single[1] = roundUpToMultiple(elements, VectorClass::size());
+        } else {
+            computeBounds<VectorClass>(threads, packets, elements, multiple);
+        }
+    }
+    size_t operator[](size_t index) const {
+        return is_single ? single[index] : multiple[index];
+    }
+};
 #endif
 
 #ifdef KERNEL_FIX_STATES
@@ -1332,10 +1355,9 @@ void PhyloTree::computeTraversalInfo(PhyloNode *node, PhyloNode *dad, bool compu
     }
 
     if (compute_partial_lh) {
-        vector<size_t> limits;
         size_t orig_nptn = roundUpToMultiple(aln->size(), VectorClass::size());
         size_t nptn      = roundUpToMultiple(orig_nptn+model_factory->unobserved_ptns.size(),VectorClass::size());
-        computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+        PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
         #ifdef _OPENMP
         if (num_threads > 1) {
@@ -1725,6 +1747,17 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
         auto rightStateRow = this->getConvertedSequenceByNumber(right->node->id);
         auto unknown = aln->STATE_UNKNOWN;
 
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+        // Experimental: a cherry's output depends only on its two tip states.
+        // Cache the 25 canonical/unknown DNA pairs within this call; the cached
+        // values come from the original SIMD operations, preserving every bit.
+        // Ambiguous pairs and other model/size configurations use the old path.
+        const bool cherry_cache_enabled = nstates == 4 && !SITE_MODEL &&
+            unknown == 18 && ncat_mix <= 8 && ptn_upper - ptn_lower >= 128;
+        double cherry_cache[25*32];
+        bool cherry_valid[25] = {};
+#endif
+
         for (size_t ptn = ptn_lower; ptn < ptn_upper; ptn+=VectorClass::size()) {
             VectorClass *partial_lh = (VectorClass*)(dad_branch->partial_lh + (ptn*block));
 
@@ -1763,6 +1796,10 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                 VectorClass *vleft  = (VectorClass*)vec_left;
                 VectorClass *vright = (VectorClass*)vec_right;
                 const double *tips_left[VectorClass::size()], *tips_right[VectorClass::size()];
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                size_t cherry_keys[VectorClass::size()];
+                bool cherry_hit = cherry_cache_enabled;
+#endif
                 // load data for tip
                 for (size_t x = 0; x < VectorClass::size(); x++) {
                     int leftState;
@@ -1790,7 +1827,28 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                     }
                     tips_left[x]  = partial_lh_left  + block*leftState;
                     tips_right[x] = partial_lh_right + block*rightState;
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                    if (cherry_cache_enabled) {
+                        size_t l = leftState < 4 ? leftState : (leftState == unknown ? 4 : 25);
+                        size_t r = rightState < 4 ? rightState : (rightState == unknown ? 4 : 25);
+                        size_t key = l < 5 && r < 5 ? l*5+r : 25;
+                        cherry_keys[x] = key;
+                        if (key == 25 || !cherry_valid[key])
+                            cherry_hit = false;
+                    }
+#endif
                 }
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+#ifndef IQTREE_DIKARYA_CHERRY_CACHE_CHECK
+                if (cherry_hit) {
+                    const double *cached[VectorClass::size()];
+                    for (size_t x = 0; x < VectorClass::size(); x++)
+                        cached[x] = cherry_cache + cherry_keys[x]*block;
+                    interleaveTipLh<VectorClass>((double*)partial_lh, cached, block);
+                    continue;
+                }
+#endif
+#endif
                 interleaveTipLh<VectorClass>(vec_left, tips_left, block);
                 interleaveTipLh<VectorClass>(vec_right, tips_right, block);
 
@@ -1814,6 +1872,28 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
                     vright += nstates;
                     partial_lh += nstates;
                 } // FOR category
+#if defined(IQTREE_DIKARYA_CHERRY_CACHE) && defined(KERNEL_FIX_STATES)
+                if (cherry_cache_enabled) {
+                    const double *output = dad_branch->partial_lh + ptn*block;
+                    for (size_t x = 0; x < VectorClass::size(); x++) {
+                        const size_t key = cherry_keys[x];
+                        if (key == 25)
+                            continue;
+#ifdef IQTREE_DIKARYA_CHERRY_CACHE_CHECK
+                        if (cherry_valid[key]) {
+                            for (size_t i = 0; i < block; i++)
+                                if (memcmp(&cherry_cache[key*block+i], &output[i*VectorClass::size()+x], sizeof(double)) != 0)
+                                    outError("Cherry cache differs from the original SIMD kernel");
+                        } else
+#endif
+                        if (!cherry_valid[key]) {
+                            for (size_t i = 0; i < block; i++)
+                                cherry_cache[key*block+i] = output[i*VectorClass::size()+x];
+                            cherry_valid[key] = true;
+                        }
+                    }
+                }
+#endif
             } // IF SITE_MODEL
 		} // FOR LOOP
 
@@ -1833,6 +1913,13 @@ void PhyloTree::computePartialLikelihoodGenericSIMD(TraversalInfo &info
 
         double *vec_left = buffer_partial_lh_ptr + thread_buf_size * packet_id;
         VectorClass *partial_lh_tmp = SITE_MODEL ? (VectorClass*)vec_left+2*nstates : (VectorClass*)vec_left+block;
+#if defined(IQTREE_DIKARYA_LOCAL_TIP_PARTIAL) && defined(KERNEL_FIX_STATES)
+        // A local DNA intermediate cannot alias the input/matrix/output buffers,
+        // letting the compiler retain the unchanged four SIMD values in registers.
+        VectorClass local_tip_partial[4];
+        if (!SITE_MODEL && nstates == 4)
+            partial_lh_tmp = local_tip_partial;
+#endif
 
         auto leftStateRow = this->getConvertedSequenceByNumber(left->node->id);
         auto unknown = aln->STATE_UNKNOWN;
@@ -2429,8 +2516,7 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     ASSERT(eval);
 
     double *buffer_partial_lh_ptr = buffer_partial_lh;
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     double *val0 = nullptr;
     double *val1 = nullptr;
@@ -2506,9 +2592,10 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
     }
 
     double all_lh(0.0), all_df(0.0), all_ddf(0.0), all_prob_const(0.0), all_df_const(0.0), all_ddf_const(0.0);
+    double *const pattern_derivatives = G_matrix;
     // One packet. The sums are parameters so that inside the OpenMP loop they bind to the
     // thread's reduction copies.
-    auto derv_packet = [=, &cat_rate, &cat_prop, &mix_addr_nstates_malign, &mix_addr_malign, &cat_id](int packet_id, double &all_lh, double &all_df, double &all_ddf,
+    auto derv_packet = [=, &limits, &cat_rate, &cat_prop, &mix_addr_nstates_malign, &mix_addr_malign, &cat_id](int packet_id, double &all_lh, double &all_df, double &all_ddf,
                            double &all_prob_const, double &all_df_const, double &all_ddf_const) {
         size_t ptn_lower = limits[packet_id];
         size_t ptn_upper = limits[packet_id+1];
@@ -2657,7 +2744,8 @@ void PhyloTree::computeLikelihoodDervGenericSIMD(PhyloNeighbor *dad_branch, Phyl
                     ddf_ptn *= inv_lh_ptn;
                     my_ddf += nmul_add(df_ptn, df_ptn, ddf_ptn) * freq;
                     // TODO: need to do further optimization with store_a in vector class
-                    df_ptn.store_a(&G_matrix[g_index + ptn]);
+                    if (pattern_derivatives)
+                        df_ptn.store_a(&pattern_derivatives[g_index + ptn]);
                 } else {
                     // ascertainment bias correction
                     if (ptn+VectorClass::size() > nptn) {
@@ -2921,16 +3009,22 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
     double all_tree_lh(0.0);
     double all_prob_const(0.0);
 
-    double* all_lh = new double[num_packets];
-    memset(all_lh, 0, num_packets * sizeof(double));
+    double single_lh = 0.0, single_prob = 0.0;
+    double* all_lh = &single_lh;
+    if (num_packets != 1) {
+        all_lh = new double[num_packets];
+        memset(all_lh, 0, num_packets * sizeof(double));
+    }
     double* all_prob = nullptr;
     if (ASC_Lewis) {
-        all_prob = new double[num_packets];
-        memset(all_prob, 0, num_packets * sizeof(double));
+        all_prob = &single_prob;
+        if (num_packets != 1) {
+            all_prob = new double[num_packets];
+            memset(all_prob, 0, num_packets * sizeof(double));
+        }
     }
 
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     if (dad->isLeaf()) {
         // cout << "PhyloTree::computeLikelihoodBrachGenericSIMD dad->isLeaf()" << endl << flush;
@@ -2987,10 +3081,9 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
         // cout << "num_packets = " << num_packets << endl;
         // cout << "num_threads = " << num_threads << endl;
         // cout << "nptn = " << nptn << endl;
-#ifdef _OPENMP
-#pragma omp parallel for  schedule(dynamic,1) num_threads(num_threads) // reduction(+:all_tree_lh,all_prob_const)
-#endif
-        for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+        auto tip_branch_packet = [=, &limits, &cat_length, &cat_prop,
+                                    &mix_addr_nstates, &mix_addr_nstates_malign,
+                                    &mix_addr, &mix_addr_malign](int packet_id) {
             // cout << "packet_id = " << packet_id << " ptn_lower = " << limits[packet_id] << " ptn_upper = " << limits[packet_id+1] << endl;
             VectorClass vc_tree_lh(0.0);
             VectorClass vc_prob_const(0.0);
@@ -3147,14 +3240,22 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
             if (ASC_Lewis)
                 all_prob[packet_id] = horizontal_add(vc_prob_const);
 
-        } // FOR packet
+        }; // one packet; output slots are disjoint
+#ifdef _OPENMP
+        if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+            for (int packet_id = 0; packet_id < num_packets; packet_id++)
+                tip_branch_packet(packet_id);
+        } else
+#endif
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            tip_branch_packet(packet_id);
     } else {
         //ASSERT(0 && "Don't compute tree log-likelihood from internal branch!");
     	//-------- both dad and node are internal nodes -----------/
-#ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads) // reduction(+:all_tree_lh,all_prob_const)
-#endif
-        for (int packet_id = 0; packet_id < num_packets; packet_id++) {
+        auto internal_branch_packet = [=, &limits, &cat_length, &cat_prop,
+                                    &mix_addr_nstates, &mix_addr_nstates_malign,
+                                    &mix_addr, &mix_addr_malign](int packet_id) {
             size_t ptn_lower = limits[packet_id];
             size_t ptn_upper = limits[packet_id+1];
 
@@ -3290,18 +3391,29 @@ double PhyloTree::computeLikelihoodBranchGenericSIMD(PhyloNeighbor *dad_branch, 
             if (ASC_Lewis)
                 all_prob[packet_id] = horizontal_add(vc_prob_const);
 
-        } // FOR thread
+        }; // one packet; output slots are disjoint
+#ifdef _OPENMP
+        if (num_threads > 1) {
+#pragma omp parallel for schedule(dynamic,1) num_threads(num_threads)
+            for (int packet_id = 0; packet_id < num_packets; packet_id++)
+                internal_branch_packet(packet_id);
+        } else
+#endif
+        for (int packet_id = 0; packet_id < num_packets; packet_id++)
+            internal_branch_packet(packet_id);
     } // else
 
     // compute the sum according the same order even using openmp
     for (int k = 0; k < num_packets; k++)
         all_tree_lh += all_lh[k];
-    delete[] all_lh;
+    if (num_packets != 1)
+        delete[] all_lh;
 
     if (all_prob != nullptr) {
         for (int k = 0; k < num_packets; k++)
             all_prob_const += all_prob[k];
-        delete[] all_prob;
+        if (num_packets != 1)
+            delete[] all_prob;
     }
 
     tree_lh += all_tree_lh;
@@ -3508,19 +3620,11 @@ double PhyloTree::computeLikelihoodFromBufferGenericSIMD()
     }
 
     double all_tree_lh(0.0), all_prob_const(0.0);
-    int nsize = nptn / VectorClass::size() + 1;
-    double* all_lh = new double[nsize];
-    memset(all_lh, 0, nsize * sizeof(double));
-    double* all_prob = nullptr;
-    if (ASC_Lewis) {
-        all_prob = new double[nsize];
-        memset(all_prob, 0, nsize * sizeof(double));
-    }
-
-    #ifdef _OPENMP
-    #pragma omp parallel for num_threads(num_threads)
-    #endif
-    for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+    struct PatternContribution {
+        double lh;
+        double prob;
+    };
+    auto buffer_pattern = [=, &cat_length, &cat_prop](size_t ptn) {
         VectorClass lh_ptn(0.0);
         VectorClass *theta = (VectorClass*)(theta_all + (ptn*block));
         if (SITE_MODEL) {
@@ -3567,21 +3671,53 @@ double PhyloTree::computeLikelihoodFromBufferGenericSIMD()
                 vc_prob_const += lh_ptn;
             }
         }
-        int k = ptn / VectorClass::size();
-        all_lh[k] = horizontal_add(vc_tree_lh);
-        if (ASC_Lewis)
-            all_prob[k] = horizontal_add(vc_prob_const);
-    }
-    
-    // compute the sum according the same order even using openmp
-    for (int k = 0; k < nsize; k++)
-        all_tree_lh += all_lh[k];
-    delete[] all_lh;
-
-    if (all_prob != nullptr) {
+        return PatternContribution{horizontal_add(vc_tree_lh),
+            ASC_Lewis ? horizontal_add(vc_prob_const) : 0.0};
+    };
+    if (num_threads > 1) {
+        int nsize = nptn / VectorClass::size() + 1;
+        double* all_lh = new double[nsize];
+        memset(all_lh, 0, nsize * sizeof(double));
+        double* all_prob = nullptr;
+        if (ASC_Lewis) {
+            all_prob = new double[nsize];
+            memset(all_prob, 0, nsize * sizeof(double));
+        }
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(num_threads)
+#endif
+        for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+            PatternContribution contribution = buffer_pattern(ptn);
+            int k = ptn / VectorClass::size();
+            all_lh[k] = contribution.lh;
+            if (ASC_Lewis)
+                all_prob[k] = contribution.prob;
+        }
+        // Keep the parallel path's ordered reduction, including the zero tail.
         for (int k = 0; k < nsize; k++)
-            all_prob_const += all_prob[k];
-        delete[] all_prob;
+            all_tree_lh += all_lh[k];
+        delete[] all_lh;
+        if (all_prob != nullptr) {
+            for (int k = 0; k < nsize; k++)
+                all_prob_const += all_prob[k];
+            delete[] all_prob;
+        }
+    } else {
+        // The former arrays were summed in increasing pattern-block order.
+        // Fold the same double contributions in that order without storing them.
+        for (size_t ptn = 0; ptn < nptn; ptn+=VectorClass::size()) {
+            PatternContribution contribution = buffer_pattern(ptn);
+            all_tree_lh += contribution.lh;
+            if (ASC_Lewis)
+                all_prob_const += contribution.prob;
+        }
+        // nsize was floor(nptn/vector_size)+1. A divisible pattern count left
+        // one extra initialized +0.0 slot, whose final addition is retained.
+        if (nptn % VectorClass::size() == 0) {
+            all_tree_lh += 0.0;
+            if (ASC_Lewis)
+                all_prob_const += 0.0;
+        }
     }
     
     double tree_lh = all_tree_lh;
@@ -3702,8 +3838,7 @@ void PhyloTree::computeLikelihoodDervMixlenGenericSIMD(PhyloNeighbor *dad_branch
     ASSERT(eval);
 
     double *buffer_partial_lh_ptr = buffer_partial_lh;
-    vector<size_t> limits;
-    computeBounds<VectorClass>(num_threads, num_packets, nptn, limits);
+    PatternBounds<VectorClass> limits(num_threads, num_packets, nptn);
 
     double *val0 = nullptr;
     double *val1 = nullptr;
