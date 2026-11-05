@@ -34,9 +34,18 @@ def read_regular(path):
         return stream.read(), info
 
 
-def load_release(release):
-    """Validate the manifest and retain the verified bytes that will be installed."""
+def load_release(release, expected_metadata_sha256):
+    """Validate the manifest and retain the verified bytes that will be installed.
+
+    The release directory belongs to the unprivileged builder, so release.json is
+    trusted only if it matches a digest the administrator obtained independently
+    (the reviewed release record). Payloads are then checked against release.json.
+    """
+    if not re.fullmatch(r'[0-9a-f]{64}', expected_metadata_sha256 or ''):
+        raise ReleaseError('An expected release.json SHA-256 (64 lowercase hex digits) is required')
     metadata_bytes, _ = read_regular(release / 'release.json')
+    if digest_bytes(metadata_bytes) != expected_metadata_sha256:
+        raise ReleaseError('release.json does not match the expected SHA-256')
     metadata = json.loads(metadata_bytes)
     if not isinstance(metadata, dict) or metadata.get('version') != '3.1.4-dikarya2':
         raise ReleaseError('Refusing an unexpected release version')
@@ -168,7 +177,8 @@ def activate_environment(executable, environment, *, owner_uid=0, owner_gid=0,
     original, info = read_regular(environment)
     if stat.S_IMODE(info.st_mode) & 0o022:
         raise ReleaseError('Environment file must not be writable by group or others')
-    lines = original.decode('utf-8').splitlines(keepends=True)
+    # Split at \n only; str.splitlines() would also split at \r, \v, \x85, ...
+    lines = re.findall(r'[^\n]*\n|[^\n]+', original.decode('utf-8'))
     current = [i for i, line in enumerate(lines) if line.strip().startswith('IQTREE_BINARY=')]
     if len(current) != 1:
         raise ReleaseError('Expected exactly one active IQTREE_BINARY setting')
@@ -212,6 +222,8 @@ def activate_environment(executable, environment, *, owner_uid=0, owner_gid=0,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('release', type=Path)
+    parser.add_argument('--release-sha256', required=True,
+                        help='SHA-256 of release.json, taken from the reviewed release record')
     parser.add_argument('--activate', action='store_true',
                         help='Also select the installed executable for future worker starts')
     args = parser.parse_args()
@@ -219,7 +231,7 @@ def main():
         raise SystemExit('This activation script is for mycolab')
     if os.geteuid() != 0:
         raise SystemExit('Installation requires administrator access')
-    snapshot = load_release(args.release.resolve(strict=True))
+    snapshot = load_release(args.release.resolve(strict=True), args.release_sha256)
     executable = install_release(snapshot, Path('/opt/iqtree-3.1.4-dikarya2'))
     print('Installed ' + str(executable))
     if not args.activate:

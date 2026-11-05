@@ -11,6 +11,10 @@ hybrid_parsimony=${IQTREE_HYBRID_PARSIMONY:-ON}
 if [[ "$hybrid_parsimony" == ON ]] && ! grep -qw avx2 /proc/cpuinfo; then
     hybrid_parsimony=OFF
 fi
+popcnt_parsimony=OFF
+if grep -qw popcnt /proc/cpuinfo; then
+    popcnt_parsimony=ON
+fi
 
 # Verify exactly the pinned packages, rather than trusting a compiler's name.
 (cd -- "$cache" && sha256sum --check --quiet "$here/toolchain.sha256")
@@ -36,6 +40,7 @@ tc cmake -S "$source_dir" -B "$build_dir" \
     -DBoost_INCLUDE_DIR="$toolchain/usr/include" \
     -DDIKARYA_AVX_PARSIMONY=OFF \
     -DDIKARYA_HYBRID_PARSIMONY="$hybrid_parsimony" \
+    -DDIKARYA_POPCNT_PARSIMONY="$popcnt_parsimony" \
     -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld "$@"
 tc nice -n 10 cmake --build "$build_dir" --target iqtree3 -j "${IQTREE_BUILD_JOBS:-2}"
 "$build_dir/iqtree3" --version

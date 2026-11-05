@@ -299,7 +299,12 @@ almost all in the likelihood kernels.
 
 ### Synthetic alignments (reproducible)
 
-`test_scripts/exact-speedups/compare-builds.sh <official> <dikarya1> N L` on this machine:
+`test_scripts/exact-speedups/compare-builds.sh <official> <dikarya1> N L` on this machine.
+Each timing is a single sample, and `compare-builds.sh` always runs the reference before the
+candidate, so these are fixed-order measurements: they show the outputs are identical and
+give a rough size of the gain, but do not establish an order-independent speedup. The
+replay harness in `test_scripts/dikarya-exact/run.py` alternates order across cases and
+repetitions for that purpose.
 
 | alignment | options | official 3.1.4 | this fork | speedup | outputs |
 |---|---|---|---|---|---|

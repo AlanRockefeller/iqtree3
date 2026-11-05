@@ -70,6 +70,7 @@ endif()
 # __builtin_popcount, which without POPCNT compiles to a bit-twiddling sequence.
 option(DIKARYA_AVX_PARSIMONY "Use integer-only 256-bit parsimony kernels (requires AVX CPU)" OFF)
 option(DIKARYA_HYBRID_PARSIMONY "Use AVX2 DNA chunks with SSE tails (requires AVX2 CPU)" OFF)
+option(DIKARYA_POPCNT_PARSIMONY "Use hardware POPCNT in SSE parsimony (requires POPCNT CPU)" OFF)
 if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND NOT IQTREE_FLAGS MATCHES "novx")
     if (DIKARYA_HYBRID_PARSIMONY)
         # Keep the existing four-word layout; use wide integer chunks only
@@ -79,7 +80,8 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND NOT IQTREE_FLAGS MATCHES "
         # This file alone owns its aligned/padded vectors. Strict-bound pruning
         # preserves every accepted full score when SIMD blocks become wider.
         set_source_files_properties(fastDNAparsimony.c PROPERTIES COMPILE_FLAGS "-mpopcnt -mavx -D__AVX")
-    else()
+    elseif (DIKARYA_POPCNT_PARSIMONY)
+        # Generic x86-64 builds keep the SSE3 baseline; POPCNT is opt-in.
         set_source_files_properties(fastDNAparsimony.c PROPERTIES COMPILE_FLAGS "-mpopcnt")
     endif()
 endif()

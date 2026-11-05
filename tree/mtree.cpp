@@ -21,7 +21,11 @@
 #include <iostream>
 //#include <fstream>
 #include <iterator>
-#include <charconv>
+#if defined(__has_include)
+#  if __has_include(<charconv>)
+#    include <charconv>
+#  endif
+#endif
 #include <cmath>
 //#include <mtree.h>
 #include "pda/splitgraph.h"
@@ -508,6 +512,8 @@ void MTree::printBranchLength(ostream &out, int brtype, bool print_slash, Neighb
 */
 static void appendStreamDouble(string &out, double value, int prec, bool fixed) {
     char buf[128];
+#if defined(__cpp_lib_to_chars)
+    // floating-point std::to_chars is C++17; older or C++14 libraries use the stream below
     if (std::isfinite(value)) {
         auto res = std::to_chars(buf, buf + sizeof(buf), value,
             fixed ? std::chars_format::fixed : std::chars_format::general, prec);
@@ -516,6 +522,7 @@ static void appendStreamDouble(string &out, double value, int prec, bool fixed) 
             return;
         }
     }
+#endif
     ostringstream ss;
     if (fixed)
         ss.setf(std::ios::fixed, std::ios::floatfield);

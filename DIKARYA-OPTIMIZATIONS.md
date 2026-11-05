@@ -228,7 +228,9 @@ describes its packaging-time state; its checksummed documents are not rewritten
 after activation. Current source documentation is maintained separately.
 
 `install-release.py` is a **mycolab-specific administrator helper**, not a
-general installer. It validates a prepared `release.json`, installs a new
+general installer. It requires `--release-sha256`, the digest of `release.json` taken from
+the reviewed release record rather than from the (builder-owned) release directory, then
+validates that `release.json` and the payload digests it lists, installs a new
 versioned prefix and can update exactly one `IQTREE_BINARY` environment setting
 while saving a protected backup. It never restarts services or interrupts jobs.
 The build helper itself does not install or activate anything.

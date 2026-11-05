@@ -192,7 +192,8 @@ def run(args):
               'reference_sha256': sha256(args.reference.read_bytes()),
               'candidate_sha256': sha256(args.candidate.read_bytes()),
               'manifest_sha256': sha256(Path(args.manifest).read_bytes()),
-              'runs': results, 'all_identical': True}
+              'runs': results, 'all_identical': False}  # set only once the run completes
+    failed = False
     root.mkdir(parents=True)
     for repeat in range(args.repeat):
         for index, case in enumerate(cases):
@@ -203,10 +204,22 @@ def run(args):
             # Alternate order across both cases and repetitions; never run
             # binaries concurrently, so neither competes with the other.
             order = ('reference', 'candidate') if (index + repeat) % 2 == 0 else ('candidate', 'reference')
-            for side in order:
-                binary = getattr(args, side)
-                prefix = root / f'{repeat + 1:02d}' / case['id'] / side / 'run'
-                runs[side] = invoke(binary, case, input_path, prefix, args.timeout)
+            try:
+                for side in order:
+                    binary = getattr(args, side)
+                    prefix = root / f'{repeat + 1:02d}' / case['id'] / side / 'run'
+                    runs[side] = invoke(binary, case, input_path, prefix, args.timeout)
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                failed = True
+                results.append({'case': case['id'], 'job': case['job'], 'group': case['group'],
+                                'repeat': repeat + 1, 'order': list(order), **runs,
+                                'error': str(error),
+                                'comparison': {'identical': False, 'differences': []}})
+                (root / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
+                print(f"{case['id']}: FAILED: {error}", flush=True)
+                if not args.keep_going:
+                    return 1
+                continue
             comparison = compare(runs['reference']['prefix'], runs['candidate']['prefix'], input_path)
             if args.check_stored and case.get('stored_tree_comparable'):
                 for side in ('reference', 'candidate'):
@@ -219,7 +232,7 @@ def run(args):
                      'repeat': repeat + 1, 'order': list(order), **runs, 'comparison': comparison,
                      'speedup': runs['reference']['wall_seconds'] / runs['candidate']['wall_seconds']}
             results.append(entry)
-            report['all_identical'] &= comparison['identical']
+            failed |= not comparison['identical']
             (root / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
             print(f"{case['id']}: {runs['reference']['wall_seconds']:.3f}s -> "
                   f"{runs['candidate']['wall_seconds']:.3f}s ({entry['speedup']:.3f}x), "
@@ -228,12 +241,18 @@ def run(args):
                 print(json.dumps(comparison['differences'], indent=2), flush=True)
                 if not args.keep_going:
                     return 1
-    reference_total = sum(x['reference']['wall_seconds'] for x in results)
-    candidate_total = sum(x['candidate']['wall_seconds'] for x in results)
-    report['summary'] = {'comparisons': len(results), 'reference_total_seconds': reference_total,
-                         'candidate_total_seconds': candidate_total,
-                         'aggregate_speedup': reference_total / candidate_total,
-                         'median_case_speedup': statistics.median(x['speedup'] for x in results)}
+    report['all_identical'] = not failed
+    completed = [x for x in results if 'error' not in x]
+    if completed:
+        reference_total = sum(x['reference']['wall_seconds'] for x in completed)
+        candidate_total = sum(x['candidate']['wall_seconds'] for x in completed)
+        report['summary'] = {'comparisons': len(completed), 'failed_runs': len(results) - len(completed),
+                             'reference_total_seconds': reference_total,
+                             'candidate_total_seconds': candidate_total,
+                             'aggregate_speedup': reference_total / candidate_total,
+                             'median_case_speedup': statistics.median(x['speedup'] for x in completed)}
+    else:
+        report['summary'] = {'comparisons': 0, 'failed_runs': len(results)}
     (root / 'results.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report['summary'], indent=2))
     return 0 if report['all_identical'] else 1

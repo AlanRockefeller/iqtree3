@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import shutil
 import subprocess
 import tempfile
 
@@ -41,7 +42,9 @@ def make_inputs(directory):
 
 
 def run(executable, inputs, output, partition_flag):
-    output.mkdir(parents=True, exist_ok=True)
+    # Never let a previous run's exports in a reused --workdir count as this run's.
+    shutil.rmtree(output, ignore_errors=True)
+    output.mkdir(parents=True)
     prefix = output / "run"
     command = [
         str(executable), "-s", str(inputs / "alignment.fasta"),
