@@ -28,7 +28,10 @@ void PhyloNode::clearReversePartialLh(PhyloNode *dad) {
             PhyloNeighbor *nei = (PhyloNeighbor*)(*it)->node->findNeighbor(this);
 			nei->partial_lh_computed = 0;
             nei->size = 0;
-			((PhyloNode*)(*it)->node)->clearReversePartialLh(this);
+            // A leaf has only the excluded parent edge, so its recursive call
+            // would return without clearing anything else.
+            if (!(*it)->node->isLeaf())
+                ((PhyloNode*)(*it)->node)->clearReversePartialLh(this);
 		}
 }
 

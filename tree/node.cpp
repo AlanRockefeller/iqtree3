@@ -55,10 +55,6 @@ Node::Node(int aid, const char *aname) {
     sequence = nullptr;
 }
 
-bool Node::isLeaf() {
-    return neighbors.size() <= 1;
-}
-
 bool Node::isInCherry() {
 	if (this->isLeaf()) {
 		if (neighbors[0]->node->isCherry()) {
@@ -76,10 +72,6 @@ bool Node::isCherry() {
     for (NeighborVec::iterator it = neighbors.begin(); it != neighbors.end(); it++)
         if ((*it)->node->isLeaf()) num_leaves++;
     return (num_leaves > 1);
-}
-
-int Node::degree() {
-    return neighbors.size();
 }
 
 /** calculate the height of the subtree rooted at this node,
@@ -169,14 +161,7 @@ double Node::longestPath2(Node* &node1, Node* &node2) {
     return node1->height;
 }
 
-Neighbor *Node::findNeighbor(Node *node) {
-	int size = neighbors.size();
-    for (int i = 0; i < size; i++)
-        if (neighbors[i]->node == node) return neighbors[i];
-    /*
-    for (NeighborVec::iterator it = neighbors.begin(); it != neighbors.end(); it ++)
-            if ((*it)->node == node)
-                    return (*it);*/
+Neighbor *Node::neighborNotFound(Node *node) {
     cout << "ERROR : Could not find neighbors of node " << node->id << endl;
     ASSERT(0);
     return nullptr;

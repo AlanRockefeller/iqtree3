@@ -339,7 +339,9 @@ public:
     /**
         @return true of this is a leaf
      */
-    bool isLeaf();
+    bool isLeaf() {
+        return neighbors.size() <= 1;
+    }
 
     /**
      *  @return TRUE if this node is a leaf in a cherry
@@ -354,7 +356,9 @@ public:
     /**
         @return the number of adjacent nodes
      */
-    int degree();
+    int degree() {
+        return neighbors.size();
+    }
 
     /** calculate the height of the subtree rooted at this node,
         given the dad. Also return the lowestLeaf.
@@ -382,7 +386,15 @@ public:
         @param node the target node
         @return the iterator to the neighbor that has the node. If not found, return nullptr
      */
-    Neighbor *findNeighbor(Node *node);
+    Neighbor *findNeighbor(Node *node) {
+        int size = neighbors.size();
+        for (int i = 0; i < size; i++)
+            if (neighbors[i]->node == node) return neighbors[i];
+        return neighborNotFound(node);
+    }
+
+    /** reports the error for findNeighbor() */
+    Neighbor *neighborNotFound(Node *node);
 
     /**
      * @brief check whether the two nodes are neighbors

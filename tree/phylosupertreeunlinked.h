@@ -113,6 +113,9 @@ public:
      */
     virtual void printTree(ostream & out, int brtype = WT_BR_LEN) override;
 
+    /** this class prints trees its own way: use printTree() */
+    virtual bool printSortedTreeString(string &out, int brtype) override { return false; }
+
     /**
      print tree to .treefile
      @param suffix suffix of the output file

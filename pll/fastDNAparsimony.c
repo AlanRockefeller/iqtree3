@@ -111,6 +111,13 @@
 #endif
 
 
+#if defined(IQTREE_DIKARYA_HYBRID_PARSIMONY) && defined(__SSE3) && !defined(__AVX)
+#include <immintrin.h>
+#ifndef __AVX2__
+#error "Hybrid parsimony requires AVX2 for this C file only"
+#endif
+#endif
+
 #include "pll.h"
 #include "pllInternal.h"
 
@@ -208,6 +215,33 @@ static __inline unsigned int vectorPopcount(INT_TYPE v)
 #endif
 
 
+
+#if defined(IQTREE_DIKARYA_HYBRID_PARSIMONY) && defined(__SSE3) && !defined(__AVX)
+/* Keep SSE's four-word padding/alignment. Only full eight-word DNA chunks
+   use AVX2; unaligned accesses also handle rows that begin 16 bytes off a
+   32-byte boundary. The existing SSE loop consumes any four-word tail. */
+static __inline unsigned int hybridPopcount256(__m256i v)
+{
+  unsigned int sum = 0;
+  int i;
+#if defined(_WIN32) && !defined(_WIN64) && !defined(WIN64)
+  unsigned int counts[8];
+  _mm256_storeu_si256((__m256i *)counts, v);
+  for(i = 0; i < 8; i++)
+    sum += __builtin_popcount(counts[i]);
+#else
+  unsigned long long counts[4];
+  _mm256_storeu_si256((__m256i *)counts, v);
+  for(i = 0; i < 4; i++)
+#ifdef _MSC_VER
+    sum += (unsigned int)_mm_popcnt_u64(counts[i]);
+#else
+    sum += (unsigned int)__builtin_popcountll(counts[i]);
+#endif
+#endif
+  return sum;
+}
+#endif
 
 /********************************DNA FUNCTIONS *****************************************************************/
 
@@ -397,7 +431,39 @@ static void newviewParsimonyIterativeFast(pllInstance *tr, partitionList *pr)
                     here[k]  = &(pr->partitionData[model]->parsVect[(width * 4 * pNumber) + width * k]);
                   }
 
-                for(i = 0; i < width; i += INTS_PER_VECTOR)
+                i = 0;
+#if defined(IQTREE_DIKARYA_HYBRID_PARSIMONY) && defined(__SSE3) && !defined(__AVX)
+                for(; i + 8 <= width; i += 8)
+                  {
+                    __m256i s_l, s_r, v_N;
+                    __m256i l_A, l_C, l_G, l_T, v_A, v_C, v_G, v_T;
+
+                    s_l = _mm256_loadu_si256((const __m256i *)&left[0][i]);
+                    s_r = _mm256_loadu_si256((const __m256i *)&right[0][i]);
+                    l_A = _mm256_and_si256(s_l, s_r);
+                    v_A = _mm256_or_si256(s_l, s_r);
+                    s_l = _mm256_loadu_si256((const __m256i *)&left[1][i]);
+                    s_r = _mm256_loadu_si256((const __m256i *)&right[1][i]);
+                    l_C = _mm256_and_si256(s_l, s_r);
+                    v_C = _mm256_or_si256(s_l, s_r);
+                    s_l = _mm256_loadu_si256((const __m256i *)&left[2][i]);
+                    s_r = _mm256_loadu_si256((const __m256i *)&right[2][i]);
+                    l_G = _mm256_and_si256(s_l, s_r);
+                    v_G = _mm256_or_si256(s_l, s_r);
+                    s_l = _mm256_loadu_si256((const __m256i *)&left[3][i]);
+                    s_r = _mm256_loadu_si256((const __m256i *)&right[3][i]);
+                    l_T = _mm256_and_si256(s_l, s_r);
+                    v_T = _mm256_or_si256(s_l, s_r);
+
+                    v_N = _mm256_or_si256(_mm256_or_si256(l_A, l_C), _mm256_or_si256(l_G, l_T));
+                    _mm256_storeu_si256((__m256i *)&here[0][i], _mm256_or_si256(l_A, _mm256_andnot_si256(v_N, v_A)));
+                    _mm256_storeu_si256((__m256i *)&here[1][i], _mm256_or_si256(l_C, _mm256_andnot_si256(v_N, v_C)));
+                    _mm256_storeu_si256((__m256i *)&here[2][i], _mm256_or_si256(l_G, _mm256_andnot_si256(v_N, v_G)));
+                    _mm256_storeu_si256((__m256i *)&here[3][i], _mm256_or_si256(l_T, _mm256_andnot_si256(v_N, v_T)));
+                    totalScore += hybridPopcount256(_mm256_andnot_si256(v_N, _mm256_set1_epi32(-1)));
+                  }
+#endif
+                for(; i < width; i += INTS_PER_VECTOR)
                   {               
                     INT_TYPE
                       s_r, s_l, v_N,
@@ -604,7 +670,25 @@ static unsigned int evaluateParsimonyIterativeFast(pllInstance *tr, partitionLis
                  right[k] = &(pr->partitionData[model]->parsVect[(width * 4 * pNumber) + width * k]);
                }        
 
-             for(i = 0; i < width; i += INTS_PER_VECTOR)
+             i = 0;
+#if defined(IQTREE_DIKARYA_HYBRID_PARSIMONY) && defined(__SSE3) && !defined(__AVX)
+             for(; i + 8 <= width; i += 8)
+               {
+                 __m256i
+                   l_A = _mm256_and_si256(_mm256_loadu_si256((const __m256i *)&left[0][i]), _mm256_loadu_si256((const __m256i *)&right[0][i])),
+                   l_C = _mm256_and_si256(_mm256_loadu_si256((const __m256i *)&left[1][i]), _mm256_loadu_si256((const __m256i *)&right[1][i])),
+                   l_G = _mm256_and_si256(_mm256_loadu_si256((const __m256i *)&left[2][i]), _mm256_loadu_si256((const __m256i *)&right[2][i])),
+                   l_T = _mm256_and_si256(_mm256_loadu_si256((const __m256i *)&left[3][i]), _mm256_loadu_si256((const __m256i *)&right[3][i])),
+                   v_N = _mm256_or_si256(_mm256_or_si256(l_A, l_C), _mm256_or_si256(l_G, l_T));
+
+                 sum += hybridPopcount256(_mm256_andnot_si256(v_N, _mm256_set1_epi32(-1)));
+                 /* A rejected wider-block bound may be larger; all callers
+                    compare strictly below bestScore, so accepted scores match. */
+                 if(sum >= bestScore)
+                   return sum;
+               }
+#endif
+             for(; i < width; i += INTS_PER_VECTOR)
                {                                                
                  INT_TYPE      
                    l_A = VECTOR_BIT_AND(VECTOR_LOAD((CAST)(&left[0][i])), VECTOR_LOAD((CAST)(&right[0][i]))),

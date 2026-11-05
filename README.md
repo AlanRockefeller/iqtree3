@@ -1,6 +1,29 @@
 IQ-TREE
 =======
 
+## Dikarya optimized build
+
+This checkout contains **IQ-TREE 3.1.4-dikarya2**, an unofficial fork used by
+[Dikarya](https://dikarya.us). It builds on the published `dikarya1` speedups.
+The final five paired replays took **100.238 s → 93.308 s** compared with the
+already optimized `dikarya1` build: **6.9% less wall time**. Scientific results
+matched in 23 real-workload replays and 26 additional checks, using the same
+inputs, options and seeds. Reproducibility evidence is for `-T 1` and the
+documented build environment.
+
+- [Optimized build guide](DIKARYA-OPTIMIZATIONS.md): version history, changes,
+  exactness limits, build requirements, options and deployment.
+- [Benchmarks and validation](DIKARYA-BENCHMARKS.md): measured results and their
+  baselines, workload coverage and executable fingerprint.
+- [Validation tools](test_scripts/dikarya-exact/README.md): synthetic tests that
+  need no private data, plus the retained-job replay procedure.
+- [Earlier optimization report](EXACT-SPEEDUPS.md): the historical `dikarya1`
+  work and its comparison with the official release.
+- [Source branch](https://github.com/AlanRockefeller/iqtree3/tree/codex/dikarya2-exact-speedups):
+  both optimization rounds, proposed for this fork's `master` branch.
+
+The upstream IQ-TREE overview, documentation and citations follow below.
+
 [![Github IQ-TREE 1 Releases](https://img.shields.io/github/downloads/Cibiv/IQ-TREE/total.svg?style=social&logo=github&label=iqtree1%20download)](https://github.com/Cibiv/IQ-TREE/releases)
 [![Github IQ-TREE 2 Releases](https://img.shields.io/github/downloads/iqtree/iqtree2/total.svg?style=social&logo=github&label=iqtree2%20download)](https://github.com/iqtree/iqtree2/releases)
 [![Github IQ-TREE 3 Releases](https://img.shields.io/github/downloads/iqtree/iqtree3/total.svg?style=social&logo=github&label=iqtree3%20download)](https://github.com/iqtree/iqtree3/releases)
@@ -11,6 +34,10 @@ IQ-TREE
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 
 Efficient and versatile phylogenomic software by maximum likelihood <http://www.iqtree.org>
+
+NOTE: The DGM-star model is implemented in the [fix_gamma](https://github.com/iqtree/iqtree3/tree/fix_gamma) branch of the code.
+It will be merged to the master branch once the manuscript is accepted for publication.
+Preprint is currently available at: <https://doi.org/10.64898/2026.10.30.763052>.
 
 Introduction
 ------------

@@ -118,6 +118,11 @@ public:
 	 */
 	void dump(bool force = false);
 
+	/**
+	 * @return TRUE if dump() without force would write the file now
+	 */
+	bool isDumpDue();
+
     /**
         set dumping interval in seconds
         @param interval dumping interval

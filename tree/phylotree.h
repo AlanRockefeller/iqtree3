@@ -1941,6 +1941,19 @@ public:
             int reps, int lbp_reps, bool aLRT_test, bool aBayes_test,
             PhyloNode *node = nullptr, PhyloNode *dad = nullptr);
 
+    /**
+            Pattern frequencies of the SH-aLRT/LBP replicates, drawn once per testAllBranches()
+            traversal by a team of alrt_boot_freq_threads threads (0: not drawn) and replayed
+            for every branch (see testOneBranch)
+     */
+    IntVector alrt_boot_freq;
+    int alrt_boot_freq_threads = 0;
+    int alrt_boot_freq_times = 0;
+    int alrt_boot_freq_nptn = 0;
+    Alignment *alrt_boot_freq_aln = nullptr;
+    /** do not cache more replicate frequencies than this (128 MB) */
+    static const size_t ALRT_BOOT_FREQ_MAX_INTS = 32 * 1024 * 1024;
+
     /****************************************************************************
             Quartet functions
      ****************************************************************************/
