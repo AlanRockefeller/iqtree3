@@ -13,6 +13,8 @@ import random
 import subprocess
 import tempfile
 
+RUN_TIMEOUT = 300  # seconds; each case is an 8-taxon, 240-site fixed-tree run
+
 
 def make_inputs(directory):
     directory.mkdir(parents=True, exist_ok=True)
@@ -51,7 +53,11 @@ def run(executable, inputs, output, partition_flag):
         command += [partition_flag, str(inputs / "partitions.nex")]
     (output / "command.json").write_text(json.dumps(command, indent=2) + "\n")
     with (output / "stdout.txt").open("wb") as stdout:
-        subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, check=True)
+        try:
+            subprocess.run(command, stdout=stdout, stderr=subprocess.STDOUT, check=True,
+                           timeout=RUN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise AssertionError(f"{executable} timed out after {RUN_TIMEOUT} s; inspect {output}")
     return prefix
 
 

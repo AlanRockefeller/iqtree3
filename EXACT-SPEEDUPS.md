@@ -78,8 +78,9 @@ synthetic generator below is for anyone who wants to repeat the comparison.
 **3. Compare every output file.** `test_scripts/exact-speedups/compare-runs.py` requires
 `.treefile`, `.contree`, `.splits.nex`, `.mldist`, `.bionj`, `.ufboot` and
 `.uniqueseq.phy` to be byte-identical, and the `.iqtree` report, `.log` and `.model.gz` to
-be identical after dropping only timing values, dates, the command line and the version
-banner. The log check catches any change in the search trajectory (every iteration's
+be identical after dropping only timing values, dates, the command line, the host name and
+the version banner (kernel selection and seed lines are compared). A pair in which either run
+lacks the `.treefile`, `.iqtree` or `.log` fails. The log check catches any change in the search trajectory (every iteration's
 log-likelihood is in it), not just in the final tree.
 
 **4. What was compared**, official 3.1.4 against the patched build, `-T 1`:

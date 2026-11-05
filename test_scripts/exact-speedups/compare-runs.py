@@ -6,7 +6,9 @@ usage: compare-runs.py PREFIX_A PREFIX_B
 Trees, consensus trees, split files, distance files and UFBoot trees must be
 byte-identical. The .iqtree report, .log and .model.gz are compared after
 dropping the lines that legitimately differ between builds and runs (version
-banner, build date, command line, host, wall/CPU times, timestamps).
+banner, build date, command line, host, wall/CPU times, timestamps). Kernel
+selection and seed lines are compared. Both runs must have written the core
+outputs (.treefile, .iqtree, .log).
 Exit status 0 if everything matches, 1 otherwise.
 """
 import gzip
@@ -16,8 +18,11 @@ from pathlib import Path
 
 BYTE_EXACT = ('treefile', 'contree', 'splits.nex', 'mldist', 'bionj', 'ufboot', 'uniqueseq.phy')
 NORMALIZED = ('iqtree', 'log', 'model.gz')
-DROP = re.compile(r'^(IQ-TREE |IQ-TREE version|IQ-TREE multicore version|Command:|Host:|Time:|'
-                  r'Kernel:|Date and Time:|Date and time:| start_real_time:| version:|Seed:|'
+REQUIRED = ('treefile', 'iqtree', 'log')
+# Kernel selection and the seed are deliberately not dropped: a candidate that
+# picks a different SIMD/FMA kernel must not be reported as identical.
+DROP = re.compile(r'^(IQ-TREE version |IQ-TREE multicore version |IQ-TREE \d|Command:|Host:|Time:|'
+                  r'Date and Time:|Date and time:| start_real_time:| version:|'
                   r'Wrote distance file)')
 SUBS = [(re.compile(r'-?\d+h:-?\d+m:-?\d+s'), 'HMS'),   # includes negative "time left" estimates
         (re.compile(r'[\d.]+(e-?\d+)?( ?)(sec|secs|second|seconds)\b'), r'T\2\3'),
@@ -52,6 +57,9 @@ def main():
     for ext in BYTE_EXACT + NORMALIZED:
         pa, pb = Path(f'{a}.{ext}'), Path(f'{b}.{ext}')
         if not pa.exists() and not pb.exists():
+            if ext in REQUIRED:
+                print(f'  {ext}: missing from both runs')
+                ok = False
             continue
         if pa.exists() != pb.exists():
             print(f'  {ext}: only one run wrote it')

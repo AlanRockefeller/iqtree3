@@ -8,7 +8,7 @@ cache=${IQTREE_TOOLCHAIN_CACHE:-/var/www/dikarya/cache/iqtree-toolchain}
 toolchain=${IQTREE_TOOLCHAIN:-$workspace/toolchain}
 build_dir=${IQTREE_BUILD_DIR:-$workspace/build}
 hybrid_parsimony=${IQTREE_HYBRID_PARSIMONY:-ON}
-if [[ "$hybrid_parsimony" == ON ]] && ! rg -qw avx2 /proc/cpuinfo; then
+if [[ "$hybrid_parsimony" == ON ]] && ! grep -qw avx2 /proc/cpuinfo; then
     hybrid_parsimony=OFF
 fi
 

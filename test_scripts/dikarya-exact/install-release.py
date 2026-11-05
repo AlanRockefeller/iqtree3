@@ -154,7 +154,11 @@ def file_identity(info):
 
 def activate_environment(executable, environment, *, owner_uid=0, owner_gid=0,
                          trusted_root=Path('/')):
-    """Replace exactly one setting, with a durable backup and concurrent-edit check."""
+    """Replace exactly one setting, with a durable backup and a best-effort concurrent-edit check.
+
+    A write that lands between the final comparison and os.replace() is not
+    detected. Do not edit the environment file while activation runs.
+    """
     ensure_directory(environment.parent, owner_uid, owner_gid, trusted_root)
     existing_regular(executable, owner_uid)
     binary_info = executable.lstat()

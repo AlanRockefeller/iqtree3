@@ -7,6 +7,15 @@ import shlex
 import subprocess
 import tempfile
 
+TIMEOUT = 600  # seconds, per compile and per oracle run
+
+
+def cpu_flags():
+    for line in Path("/proc/cpuinfo").read_text().splitlines():
+        if line.startswith("flags"):
+            return set(line.split(":", 1)[1].split())
+    return set()
+
 
 def main():
     source_dir = Path(__file__).resolve().parents[2]
@@ -48,6 +57,12 @@ def main():
         "avx": ["-mavx", "-D__AVX"],
         "hybrid": ["-mavx2", "-DIQTREE_DIKARYA_HYBRID_PARSIMONY"],
     }
+    required = {"sse": {"popcnt"}, "avx": {"popcnt", "avx"}, "hybrid": {"popcnt", "avx2"}}
+    missing = {name: sorted(features - cpu_flags()) for name, features in required.items()}
+    missing = {name: features for name, features in missing.items() if features}
+    if missing:
+        raise RuntimeError("This CPU cannot run every oracle variant; missing "
+                           + "; ".join(f"{name}: {', '.join(f)}" for name, f in missing.items()))
     expected = None
     with tempfile.TemporaryDirectory(prefix="iqtree-parsimony-oracle-") as directory:
         for name, flags in variants.items():
@@ -55,9 +70,13 @@ def main():
             subprocess.run(
                 [compiler, *base, "-mpopcnt", *flags, "-Wl,--gc-sections",
                  "-o", str(executable), str(fixture), "-lm"],
-                env=compile_env, check=True,
+                env=compile_env, check=True, timeout=TIMEOUT,
             )
-            output = subprocess.check_output([str(executable)], env=run_env, text=True)
+            try:
+                output = subprocess.check_output([str(executable)], env=run_env, text=True,
+                                                 timeout=TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"{name} oracle did not finish within {TIMEOUT} s")
             if "PASS cases3800 bound_decisions986179 hash0e761a6a5fab47be" not in output:
                 raise RuntimeError(f"Unexpected {name} oracle result: {output}")
             if expected is not None and output != expected:

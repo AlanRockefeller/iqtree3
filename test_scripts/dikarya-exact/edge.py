@@ -254,12 +254,15 @@ def collected_run(args, cases):
             raise ValueError('Prepared edge input changed: ' + str(input_path))
         result = {'case': case}
         try:
-            if source and references[case['id']]['case'] != case:
-                raise ValueError('Case or options changed since reference was collected')
+            if source:
+                previous = references.get(case['id'])
+                if previous is None or 'execution' not in previous:
+                    raise RuntimeError('No successful reference result for ' + case['id'])
+                if previous['case'] != case:
+                    raise RuntimeError('Case or options changed since reference was collected')
             result['execution'] = replay.invoke(binary, case, input_path,
                                                  root / case['id'] / 'run', args.timeout)
             if source:
-                previous = references[case['id']]
                 result['comparison'] = replay.compare(previous['execution']['prefix'],
                                                        result['execution']['prefix'], input_path)
                 if not result['comparison']['identical']:
