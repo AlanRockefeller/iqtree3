@@ -15,13 +15,16 @@ comparison rules and sample sizes.
 | Version | Role | Source/status |
 |---|---|---|
 | Upstream `3.1.4` | Original IQ-TREE release | [Official source](https://github.com/iqtree/iqtree3/tree/v3.1.4) |
-| `3.1.4-dikarya1` | Earlier optimization series; baseline for this work | [Earlier branch](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) and [historical technical write-up](EXACT-SPEEDUPS.md) |
-| `3.1.4-dikarya2` | Changes described here; deployed on Dikarya | [Source branch](https://github.com/AlanRockefeller/iqtree3/tree/codex/dikarya2-exact-speedups), proposed for this fork's `master` branch |
+| `3.1.4-dikarya1` | Earlier optimization series; baseline for this work | [Release tag](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) and [historical technical write-up](EXACT-SPEEDUPS.md) |
+| `3.1.4-dikarya2` | Changes described here; deployed on Dikarya | [Source](https://github.com/AlanRockefeller/iqtree3/tree/master): this fork's `master` branch |
 
-This branch preserves the earlier optimization commits through `33c00b8c`
-and adds the `dikarya2` changes. It includes both rounds above the fork's
-stock `master` baseline. The fork's default branch remains `exact-speedups`;
-select `codex/dikarya2-exact-speedups` explicitly to obtain this version.
+The fork's `master` branch preserves the earlier optimization commits through
+`33c00b8c` and adds the `dikarya2` changes, so it includes both rounds above
+the upstream `master` baseline. `master` is the fork's default branch, so a
+plain clone obtains this version. The working branches `exact-speedups`,
+`speedups` and `codex/dikarya2-exact-speedups` were removed after the merge;
+their last commits are kept as the tags `dikarya1-exact-speedups-final` and
+`dikarya1-speedups-final`, and the `dikarya2` branch tip is in `master`.
 No downloadable GitHub release or `dikarya2` release tag is claimed here.
 The deployment bundle's `source.patch` records the original changes relative
 to `33c00b8c`; current source documentation can be newer than that immutable
@@ -108,7 +111,7 @@ The helper is for **Linux x86-64**, tested on Ubuntu 24.04. It needs Bash,
 runtime libraries. Initialize source submodules first:
 
 ```sh
-git clone --branch codex/dikarya2-exact-speedups --recurse-submodules \
+git clone --branch master --recurse-submodules \
   https://github.com/AlanRockefeller/iqtree3.git
 cd iqtree3
 
