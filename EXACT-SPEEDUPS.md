@@ -110,7 +110,7 @@ operation is reordered, fused or split.
 
 The branch [`upstream-pr`](https://github.com/AlanRockefeller/iqtree3/tree/upstream-pr) is exactly these eleven commits on top of
 v3.1.4 (`63c330d`, which is also `master` as of 2026-10-08): the branch to merge or open a
-pull request from. [`speedups`](https://github.com/AlanRockefeller/iqtree3/tree/speedups) is the same plus this documentation and the
+pull request from. The former `speedups` branch (kept as the tag [`dikarya1-speedups-final`](https://github.com/AlanRockefeller/iqtree3/tree/dikarya1-speedups-final)) was the same plus this documentation and the
 test harness. Gains quoted per change are from interleaved runs on the machine above, which
 is shared and noisy at the 2-4% level.
 
@@ -274,9 +274,9 @@ of the single-block loop on the same operands, with its temporaries in registers
 runs the same scaling check; only the coefficient loads are shared. The blocks write
 disjoint patterns. 0.7% on Quick Tree, 2% on advanced runs, 6% on a 489-taxon GTR+F+R6 tree.
 
-### Version (not part of `upstream-pr` or `speedups`)
+### Version (not part of `upstream-pr`)
 
-The [`exact-speedups`](https://github.com/AlanRockefeller/iqtree3/tree/exact-speedups) branch and the
+The former `exact-speedups` branch (kept as the tag [`dikarya1-exact-speedups-final`](https://github.com/AlanRockefeller/iqtree3/tree/dikarya1-exact-speedups-final)) and the
 [`v3.1.4-dikarya1`](https://github.com/AlanRockefeller/iqtree3/tree/v3.1.4-dikarya1) tag add one commit that changes
 `iqtree_VERSION_PATCH` to `.4-dikarya1`, so a run's log names the build. Drop it when merging.
 
@@ -397,7 +397,7 @@ advanced run: kernels ~50%, the UFBoot RELL dot products ~8%, `clearReverseParti
 Build the way the release is built (Linux x86-64; this matches `.github/workflows/ci.yaml`):
 
 ```bash
-git clone --branch exact-speedups --recurse-submodules https://github.com/AlanRockefeller/iqtree3.git
+git clone --branch v3.1.4-dikarya1 --recurse-submodules https://github.com/AlanRockefeller/iqtree3.git
 cd iqtree3 && mkdir build && cd build
 # clang 22 (apt.llvm.org), libeigen3-dev and libboost-dev from Ubuntu 22.04
 cmake .. -DIQTREE_FLAGS=static -DUSE_MUTSEL=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \

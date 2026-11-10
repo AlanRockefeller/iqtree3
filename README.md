@@ -19,8 +19,8 @@ documented build environment.
   need no private data, plus the retained-job replay procedure.
 - [Earlier optimization report](EXACT-SPEEDUPS.md): the historical `dikarya1`
   work and its comparison with the official release.
-- [Source branch](https://github.com/AlanRockefeller/iqtree3/tree/codex/dikarya2-exact-speedups):
-  both optimization rounds, proposed for this fork's `master` branch.
+- [Source](https://github.com/AlanRockefeller/iqtree3/tree/master): both optimization rounds are on this
+  fork's `master` branch, which is its default branch.
 
 The upstream IQ-TREE overview, documentation and citations follow below.
 

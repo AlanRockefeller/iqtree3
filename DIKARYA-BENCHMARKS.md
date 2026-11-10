@@ -33,7 +33,7 @@ statistic from the ratio of total times above.
 ## Baselines and attribution
 
 `dikarya1` already contained the earlier exact-speedup series. Its separate
-[public report](https://github.com/AlanRockefeller/iqtree3/blob/exact-speedups/EXACT-SPEEDUPS.md)
+[public report](https://github.com/AlanRockefeller/iqtree3/blob/master/EXACT-SPEEDUPS.md)
 compares it with official IQ-TREE 3.1.4 on different datasets. The **6.9% here is
 additional improvement over that optimized baseline**. It is not a new timing
 of final `dikarya2` against the official release. Multiplying ratios from those
